@@ -1,0 +1,110 @@
+name: sentinel-n8n
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Runs once, on first init of an empty data dir. Creates the sentinel DB
+      # and its tables alongside n8n's.
+      - ./db/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    # Loopback only — for psql access and host-side tests, never reachable
+    # off-box. Remove this line entirely for a shared/production host.
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [sentinel]
+
+  sentinel-agent:
+    build:
+      context: ./services/sentinel-agent
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/sentinel
+      PROMPTS_DIR: /prompts
+      REFERENCE_DIR: /reference
+    volumes:
+      # The two skill files are the single source of truth for humans and for
+      # the sidecar. Mounted read-only, read at request time — edit them and the
+      # next generation picks the change up without a rebuild.
+      - ./skills/generate-sentinel-parser.md:/prompts/generate-sentinel-parser.md:ro
+      - ./skills/generate-sentinel-workbook.md:/prompts/generate-sentinel-workbook.md:ro
+      - ./data:/reference:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # NOT published to the host. Reachable only from n8n on the compose network.
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz',timeout=3).status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks: [sentinel]
+
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_HOST: ${N8N_HOST}
+      N8N_PORT: ${N8N_PORT}
+      N8N_PROTOCOL: ${N8N_PROTOCOL}
+      WEBHOOK_URL: ${WEBHOOK_URL}
+      N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      # Long agent runs: a 100-panel workbook can take several minutes end to end.
+      EXECUTIONS_TIMEOUT: 3600
+      EXECUTIONS_TIMEOUT_MAX: 7200
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true"
+      # The deploy workflow derives a workbook's stable GUID with sha1, the
+      # same way uuid5 does, so redeploys update in place instead of creating
+      # a new resource each time.
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
+      # Where the orchestrator's tool nodes point.
+      SENTINEL_AGENT_URL: http://sentinel-agent:8000
+      # Read by the deploy workflow to build ARM resource ids.
+      # Secrets are NOT here — the client secret lives in the n8n credential
+      # store, attached to the HTTP nodes as an OAuth2 credential.
+      AZURE_SUBSCRIPTION_ID: ${AZURE_SUBSCRIPTION_ID}
+      AZURE_RESOURCE_GROUP: ${AZURE_RESOURCE_GROUP}
+      AZURE_WORKSPACE_NAME: ${AZURE_WORKSPACE_NAME}
+      AZURE_LOCATION: ${AZURE_LOCATION}
+    ports:
+      - "${N8N_PORT}:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sentinel-agent:
+        condition: service_started
+    networks: [sentinel]
+
+volumes:
+  postgres_data:
+  n8n_data:
+
+networks:
+  sentinel:
+    driver: bridge
