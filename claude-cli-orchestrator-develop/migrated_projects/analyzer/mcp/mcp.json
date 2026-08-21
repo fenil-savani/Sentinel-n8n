@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "context-engine": {
+      "type": "http",
+      "url": "http://10.5.50.275:8090/mcp"
+    }
+  }
+}

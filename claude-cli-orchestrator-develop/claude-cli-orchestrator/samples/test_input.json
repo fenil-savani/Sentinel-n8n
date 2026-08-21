@@ -1,0 +1,91 @@
+﻿{
+  "source_platform": "splunk",
+  "destination_platform": "google_secops",
+  "migration_type": "query",
+  "destination_metadata": {
+    "log_type": "WINDOWS_SECURITY",
+    "project_id": "my-gcp-project",
+    "customer_id": "acme-corp"
+  },
+  "summary": "Counts failed Windows login attempts per source IP over a 1-hour sliding window and alerts when the count exceeds 10, grouped by source IP address.",
+  "intent": "Detect brute-force login attacks against Windows hosts by identifying source IPs generating an unusually high number of authentication failures.",
+  "use_case": "Brute Force Detection -- Windows Authentication",
+  "parsed_json": {
+    "base_search": {
+      "index": "wineventlog",
+      "criteria": [
+        {"field": "EventCode", "operator": "=", "value": "4625"},
+        {"field": "sourcetype", "operator": "=", "value": "WinEventLog:Security"}
+      ]
+    },
+    "pipeline": [
+      {
+        "command": "stats",
+        "arguments": {
+          "function": "count",
+          "by": ["src_ip"]
+        }
+      },
+      {
+        "command": "where",
+        "arguments": {
+          "condition": "count > 10"
+        }
+      }
+    ],
+    "time_window": {
+      "type": "sliding",
+      "value": 1,
+      "unit": "hours"
+    }
+  },
+  "commands": [
+    {"name": "search",  "description": "Base event filter by EventCode and sourcetype"},
+    {"name": "stats",   "description": "Count events grouped by src_ip"},
+    {"name": "where",   "description": "Filter groups where count exceeds threshold"}
+  ],
+  "fields": ["EventCode", "sourcetype", "src_ip"],
+  "functions": ["count"],
+  "field_mappings": [
+    {
+      "source_field":       "EventCode",
+      "destination_field":  "metadata.product_event_type",
+      "matching_tier":      "high",
+      "reasoning":          "EventCode directly maps to product_event_type in UDM",
+      "source_extraction":  null,
+      "destination_extraction": null
+    },
+    {
+      "source_field":       "src_ip",
+      "destination_field":  "principal.ip",
+      "matching_tier":      "high",
+      "reasoning":          "Source IP maps to principal.ip in UDM network events",
+      "source_extraction":  null,
+      "destination_extraction": null
+    },
+    {
+      "source_field":       "sourcetype",
+      "destination_field":  "metadata.log_type",
+      "matching_tier":      "high",
+      "reasoning":          "sourcetype identifies the log source; maps to UDM log_type",
+      "source_extraction":  null,
+      "destination_extraction": null
+    }
+  ],
+  "query": "index=wineventlog EventCode=4625 sourcetype=WinEventLog:Security | stats count by src_ip | where count > 10",
+  "source_metadata": {
+    "index": "wineventlog",
+    "sourcetype": "WinEventLog:Security"
+  },
+  "app_name": "windows_security_monitoring",
+  "panel_name": "Brute Force Dashboard",
+  "datasource": "wineventlog",
+  "usage_type": "detection",
+  "unmapped_fields": [],
+  "metadata": {
+    "created_by": "migration-tool",
+    "version": "1.0"
+  },
+  "workflow_id": "test-workflow-001",
+  "agentweave_sessions": []
+}

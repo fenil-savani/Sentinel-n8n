@@ -1,0 +1,42 @@
+# =============================================================================
+# SOURCE ANALYZER PROJECT CONFIGURATION
+# =============================================================================
+# This project is the first processing stage in the agentic migration pipeline.
+# It accepts raw source inputs from any supported observability platform,
+# extracts structural elements, generates semantic understanding, and produces
+# a fully Enriched Normalized JSON for handoff to the next node.
+#
+# STRUCTURE:
+# - agents/*.md have CORE (framework) and PROJECT (domain) sections
+# - product_docs/skills/ contains platform-specific skill files (.md files only)
+# =============================================================================
+
+name: source-analyzer
+display_name: "Source Analyzer"
+description: "Analyzes raw source queries from observability platforms, extracts structural elements (fields, commands, functions), generates semantic understanding (summary, intent, use case), and produces Enriched Normalized JSON for the migration pipeline."
+core_instructions: false  # Framework core instructions are enabled; set to false to use only project agent prompts
+
+# =============================================================================
+# EXTERNAL MCP SERVERS
+# =============================================================================
+# MCP servers are configured in mcp.json (same directory as this file).
+# Format: {"mcpServers": {"server-name": {config...}, ...}}
+#
+# Tool naming convention: mcp__<server-name>__<tool-name>
+# =============================================================================
+
+repository:
+  url: ""
+  branch: "main"
+  local_path: "./repos/source-analyzer"
+
+supervisor:
+  prompt_file: supervisor.md
+  model: haiku
+
+subagents:
+  - name: analyzer
+    prompt_file: analyzer.md
+    description: "Accepts raw source inputs from any supported observability platform (Splunk, Dynatrace, Datadog, Elastic, etc.), extracts all structural elements (fields, commands, functions), resolves datasource, generates summary/intent/use_case, and produces Enriched Normalized JSON. Uses platform-specific skills from product_docs/skills/."
+    model: haiku
+    tools: [Read, Grep, Bash, Skill, mcp__context-engine__context_engine_agent]

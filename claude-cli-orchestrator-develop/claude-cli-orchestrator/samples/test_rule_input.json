@@ -1,0 +1,57 @@
+﻿{
+  "source_platform": "splunk",
+  "destination_platform": "google_secops",
+  "migration_type": "rule",
+  "destination_metadata": {
+    "log_type": "WINDOWS_SECURITY",
+    "project_id": "my-gcp-project",
+    "customer_id": "acme-corp"
+  },
+  "summary": "Detects multiple failed login attempts (EventCode 4625) from the same source IP within a 15-minute window, where the count exceeds 5.",
+  "intent": "Detect credential stuffing or brute-force attacks targeting Windows systems through repeated authentication failures from a single source.",
+  "use_case": "Brute Force -- YARA-L Rule",
+  "parsed_json": {
+    "base_search": {
+      "index": "wineventlog",
+      "criteria": [
+        {"field": "EventCode", "operator": "=", "value": "4625"}
+      ]
+    },
+    "pipeline": [
+      {"command": "stats",   "arguments": {"function": "count", "by": ["src_ip"]}},
+      {"command": "where",   "arguments": {"condition": "count > 5"}}
+    ],
+    "time_window": {"type": "sliding", "value": 15, "unit": "minutes"}
+  },
+  "commands": [
+    {"name": "search",  "description": "Filter for failed logon events"},
+    {"name": "stats",   "description": "Count by source IP"},
+    {"name": "where",   "description": "Threshold filter: count > 5"}
+  ],
+  "fields": ["EventCode", "src_ip"],
+  "functions": ["count"],
+  "field_mappings": [
+    {
+      "source_field": "EventCode",
+      "destination_field": "metadata.product_event_type",
+      "matching_tier": "high",
+      "reasoning": "Direct mapping of Windows event code to UDM product_event_type"
+    },
+    {
+      "source_field": "src_ip",
+      "destination_field": "principal.ip",
+      "matching_tier": "high",
+      "reasoning": "Source IP maps to principal.ip in UDM"
+    }
+  ],
+  "query": "index=wineventlog EventCode=4625 | stats count by src_ip | where count > 5",
+  "source_metadata": {"index": "wineventlog"},
+  "app_name": "windows_security",
+  "panel_name": "Auth Failures",
+  "datasource": "wineventlog",
+  "usage_type": "detection",
+  "unmapped_fields": [],
+  "metadata": {"version": "1.0"},
+  "workflow_id": "test-rule-001",
+  "agentweave_sessions": []
+}

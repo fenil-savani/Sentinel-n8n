@@ -1,0 +1,49 @@
+# =============================================================================
+# Field Mapper
+# =============================================================================
+# Generated on 2026-03-31 10:49:27
+#
+# STRUCTURE:
+# - agents/*.md have CORE (framework) and PROJECT (domain) sections
+# - product_docs/ contains API documentation (.md files only)
+# =============================================================================
+
+name: field-mapper
+display_name: "Field Mapper"
+description: "This project extracts the fields and its extractions from the respective parser files and does field mapping between the source and destination platforms."
+core_instructions: false  # Framework core instructions are enabled; set to false to use only project agent prompts
+
+repository:
+  url: ""
+  branch: "main"
+  local_path: "./repo"
+
+supervisor:
+  prompt_file: supervisor.md
+  model: haiku
+
+subagents:
+  - name: field-extractor
+    prompt_file: field_extractor.md
+    description: "Parse the conf files of the source and destination platforms and extract the fields and its extractions"
+    model: haiku
+    tools: [Write, Read, Grep, Bash, Skill, mcp__splunk-mcp-server__extract_fields, mcp__google-secops-mcp-server__fetch_secops_parser]
+    
+  - name: field-mapper
+    prompt_file: field_mapper.md
+    description: "Maps the fields from the source and destination platforms"
+    model: haiku
+    tools: [Write, Edit, Read, Grep, Skill, Bash]
+
+# =============================================================================
+# EXTERNAL MCP SERVERS (Optional)
+# =============================================================================
+# To register external MCP servers, create a mcp.json file in this directory.
+# Standard format: {"mcpServers": {"server-name": {config...}, ...}}
+# See mcp.json.example for a complete reference.
+#
+# Tool naming: mcp__<server-name>__<tool-name>
+# All tools from each server are auto-allowed via mcp__<server-name>__* wildcard.
+# Env var syntax: "${VAR}" in mcp.json is resolved from os.environ at load time.
+
+    

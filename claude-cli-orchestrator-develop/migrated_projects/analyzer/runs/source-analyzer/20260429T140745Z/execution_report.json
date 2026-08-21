@@ -1,0 +1,98 @@
+{
+  "run_id": "20260429T140745Z",
+  "workflow": "source-analyzer",
+  "model": "claude-haiku-4-5-20251001",
+  "started_at": "2026-04-29T14:07:45.368043+00:00",
+  "completed_at": "2026-04-29T14:09:34.910727+00:00",
+  "final_status": "PASS",
+  "total_iterations": 1,
+  "cost": {
+    "total_usd": 0.040864,
+    "by_step": {
+      "analyzer": 0.040864
+    }
+  },
+  "usage": {
+    "total_turns": 3,
+    "total_elapsed_sec": 109.5,
+    "turns_by_step": {
+      "analyzer": 3
+    },
+    "total_input_tokens": 12,
+    "total_output_tokens": 1351,
+    "total_cache_read_tokens": 42759,
+    "total_cache_creation_tokens": 23857,
+    "total_tokens_processed": 67979
+  },
+  "steps": [
+    {
+      "step_id": "analyzer",
+      "iteration": 1,
+      "agent": "analyzer",
+      "success": true,
+      "cost_usd": 0.040864,
+      "num_turns": 3,
+      "elapsed_sec": 109.5,
+      "timestamp": "2026-04-29T14:09:34.908079+00:00",
+      "prompt_preview": "# Source Analyzer Node\n\n## Core: Autonomous Execution Mode\n\n**YOU ARE RUNNING IN FULLY AUTONOMOUS MODE.** There is NO human available.\n\n### Absolute Rules\n1. **NEVER ask questions** - No \"Should I pro...",
+      "output_keys": [
+        "id",
+        "query",
+        "parsed_json",
+        "fields",
+        "commands",
+        "functions",
+        "metadata",
+        "usage_type",
+        "datasource",
+        "summary",
+        "intent",
+        "use_case"
+      ],
+      "error": null,
+      "tokens": {
+        "input": 12,
+        "output": 1351,
+        "cache_read": 42759,
+        "cache_creation": 23857
+      },
+      "duration_ms": 98713,
+      "skills_loaded": [],
+      "tool_calls": [
+        {
+          "name": "Skill",
+          "input": {
+            "skill": "splunk"
+          }
+        },
+        {
+          "name": "mcp__context-engine__context_engine_agent",
+          "input": {
+            "query": "What are the reserved fields and default fields for Splunk queries?",
+            "source_product": "splunk"
+          }
+        }
+      ],
+      "product_docs_loaded": []
+    }
+  ],
+  "trace": [
+    {
+      "event": "step_start",
+      "timestamp": "2026-04-29T14:07:45.374640+00:00",
+      "step": "analyzer",
+      "iteration": 1,
+      "attempt": 1,
+      "input_mode": "auto-chain"
+    },
+    {
+      "event": "step_complete",
+      "timestamp": "2026-04-29T14:09:34.908430+00:00",
+      "step": "analyzer",
+      "iteration": 1,
+      "attempt": 1,
+      "success": true,
+      "elapsed_sec": 109.5
+    }
+  ]
+}

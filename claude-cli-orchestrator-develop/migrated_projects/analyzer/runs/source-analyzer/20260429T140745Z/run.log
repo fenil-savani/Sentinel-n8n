@@ -1,0 +1,9 @@
+2026-04-29 19:37:45,363 [INFO] main: Log file: C:\splunk_secops_migration\agentic_arc_1\agentic-migration-tool\migrated_projects\analyzer\runs\source-analyzer\20260429T140745Z\run.log
+2026-04-29 19:37:45,364 [INFO] core.orchestrator: === WorkflowEngine START | workflow=source-analyzer | model=claude-haiku-4-5-20251001 ===
+2026-04-29 19:37:45,374 [INFO] core.task_dispatcher: [analyzer] Starting -- pipeline_iter=1 attempt=1 input_mode=auto-chain payload_keys=23
+2026-04-29 19:37:45,380 [INFO] core.agent_runner: [analyzer] Starting | tools=['Read', 'Grep', 'Bash', 'Skill', 'mcp__context-engine__context_engine_agent'] payload_keys=['source_platform', 'destination_platform', 'migration_type', 'destination_metadata', 'summary', 'intent', 'use_case', 'parsed_json', 'commands', 'fields', 'functions', 'field_mappings', 'query', 'source_metadata', 'app_name', 'panel_name', 'datasource', 'usage_type', 'unmapped_fields', 'metadata', 'workflow_id', 'agentweave_sessions', 'ctx_iteration']
+2026-04-29 19:39:34,883 [INFO] core.cli_client: Claude CLI OK | session=b7c40af0-6b55-4212-90c3-980e6b387be4 turns=3 cost=$0.0409 in=12 out=1351 cache_read=42759 thinking=0chars
+2026-04-29 19:39:34,883 [INFO] core.agent_runner: [analyzer] Complete | turns=3 cost=$0.0409 elapsed=109.5s
+2026-04-29 19:39:34,910 [INFO] core.orchestrator: === WorkflowEngine DONE | status=PASS | iterations=1 | elapsed=109.5s ===
+2026-04-29 19:39:34,921 [INFO] core.orchestrator: output.json written: C:\splunk_secops_migration\agentic_arc_1\agentic-migration-tool\migrated_projects\analyzer\runs\source-analyzer\20260429T140745Z\output.json
+2026-04-29 19:39:34,927 [INFO] observability.reporter: Execution report written: C:\splunk_secops_migration\agentic_arc_1\agentic-migration-tool\migrated_projects\analyzer\runs\source-analyzer\20260429T140745Z\execution_report.json

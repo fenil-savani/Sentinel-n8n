@@ -1,0 +1,227 @@
+{
+  "payload": {
+    "source_platform": "splunk",
+    "destination_platform": "google_secops",
+    "migration_type": "query",
+    "destination_metadata": {
+      "log_type": "WINDOWS_SECURITY",
+      "project_id": "my-gcp-project",
+      "customer_id": "acme-corp"
+    },
+    "summary": "Counts failed Windows login attempts per source IP over a 1-hour sliding window and alerts when the count exceeds 10, grouped by source IP address.",
+    "intent": "Detect brute-force login attacks against Windows hosts by identifying source IPs generating an unusually high number of authentication failures.",
+    "use_case": "Brute Force Detection -- Windows Authentication",
+    "parsed_json": {
+      "base_search": {
+        "index": "wineventlog",
+        "criteria": [
+          {
+            "field": "EventCode",
+            "operator": "=",
+            "value": "4625"
+          },
+          {
+            "field": "sourcetype",
+            "operator": "=",
+            "value": "WinEventLog:Security"
+          }
+        ]
+      },
+      "pipeline": [
+        {
+          "command": "stats",
+          "arguments": {
+            "function": "count",
+            "by": [
+              "src_ip"
+            ]
+          }
+        },
+        {
+          "command": "where",
+          "arguments": {
+            "condition": "count > 10"
+          }
+        }
+      ],
+      "time_window": {
+        "type": "sliding",
+        "value": 1,
+        "unit": "hours"
+      }
+    },
+    "commands": [
+      {
+        "name": "search",
+        "description": "Base event filter by EventCode and sourcetype"
+      },
+      {
+        "name": "stats",
+        "description": "Count events grouped by src_ip"
+      },
+      {
+        "name": "where",
+        "description": "Filter groups where count exceeds threshold"
+      }
+    ],
+    "fields": [
+      "EventCode",
+      "sourcetype",
+      "src_ip"
+    ],
+    "functions": [
+      "count"
+    ],
+    "field_mappings": [
+      {
+        "source_field": "EventCode",
+        "destination_field": "metadata.product_event_type",
+        "matching_tier": "high",
+        "reasoning": "EventCode directly maps to product_event_type in UDM",
+        "source_extraction": null,
+        "destination_extraction": null
+      },
+      {
+        "source_field": "src_ip",
+        "destination_field": "principal.ip",
+        "matching_tier": "high",
+        "reasoning": "Source IP maps to principal.ip in UDM network events",
+        "source_extraction": null,
+        "destination_extraction": null
+      },
+      {
+        "source_field": "sourcetype",
+        "destination_field": "metadata.log_type",
+        "matching_tier": "high",
+        "reasoning": "sourcetype identifies the log source; maps to UDM log_type",
+        "source_extraction": null,
+        "destination_extraction": null
+      }
+    ],
+    "query": "index=wineventlog EventCode=4625 sourcetype=WinEventLog:Security | stats count by src_ip | where count > 10",
+    "source_metadata": {
+      "index": "wineventlog",
+      "sourcetype": "WinEventLog:Security"
+    },
+    "app_name": "windows_security_monitoring",
+    "panel_name": "Brute Force Dashboard",
+    "datasource": "wineventlog",
+    "usage_type": "detection",
+    "unmapped_fields": [],
+    "metadata": {
+      "created_by": "migration-tool",
+      "version": "1.0"
+    },
+    "workflow_id": "test-workflow-001",
+    "agentweave_sessions": [],
+    "ctx_iteration": 1
+  },
+  "result": {
+    "id": "test-workflow-001",
+    "query": "index=wineventlog EventCode=4625 sourcetype=WinEventLog:Security | stats count by src_ip | where count > 10",
+    "parsed_json": {
+      "base_search": {
+        "index": "wineventlog",
+        "criteria": [
+          {
+            "field": "EventCode",
+            "operator": "=",
+            "value": "4625"
+          },
+          {
+            "field": "sourcetype",
+            "operator": "=",
+            "value": "WinEventLog:Security"
+          }
+        ]
+      },
+      "pipeline": [
+        {
+          "command": "stats",
+          "arguments": {
+            "function": "count",
+            "by": [
+              "src_ip"
+            ]
+          }
+        },
+        {
+          "command": "where",
+          "arguments": {
+            "condition": "count > 10"
+          }
+        }
+      ],
+      "time_window": {
+        "type": "sliding",
+        "value": 1,
+        "unit": "hours"
+      }
+    },
+    "fields": {
+      "reserved_fields": [
+        "index",
+        "sourcetype",
+        "_raw",
+        "_time"
+      ],
+      "custom_fields": [
+        "EventCode",
+        "src_ip",
+        "count"
+      ],
+      "meta_fields": {
+        "index": "wineventlog",
+        "sourcetype": "WinEventLog:Security"
+      }
+    },
+    "commands": [
+      {
+        "name": "search",
+        "description": "Base event filter using field criteria (EventCode=4625 and sourcetype=WinEventLog:Security) against the wineventlog index"
+      },
+      {
+        "name": "stats",
+        "description": "Aggregates events by counting occurrences grouped by the src_ip field"
+      },
+      {
+        "name": "where",
+        "description": "Filters the aggregated results to include only groups where the count exceeds the threshold of 10"
+      }
+    ],
+    "functions": [
+      {
+        "name": "count",
+        "description": "Aggregation function that counts the number of events in each group"
+      }
+    ],
+    "metadata": {
+      "created_by": "migration-tool",
+      "version": "1.0"
+    },
+    "usage_type": "detection",
+    "datasource": "wineventlog",
+    "summary": "This Splunk query searches the wineventlog index for Windows failed authentication events (EventCode 4625) with sourcetype WinEventLog:Security. It aggregates the events using a count function grouped by source IP address (src_ip) and filters the results to display only source IPs that have generated more than 10 failed authentication attempts within a 1-hour sliding window. The output provides a list of suspicious source IPs ranked by the number of failed login attempts they initiated.",
+    "intent": "Detect brute-force login attacks against Windows hosts by identifying source IP addresses that exceed a threshold of failed authentication attempts within a defined time window.",
+    "use_case": "Security monitoring for brute-force attack detection on Windows domain-joined systems. Used in a detection alert workflow to automatically trigger notifications when source IPs exhibit authentication patterns consistent with credential-stuffing or password-spray attacks."
+  },
+  "raw_text": "Excellent. Now I have the context engine knowledge. Let me now generate the Enriched Normalized JSON output for the Source Analyzer Node:\n\n```json\n{\n  \"id\": \"test-workflow-001\",\n  \"query\": \"index=wineventlog EventCode=4625 sourcetype=WinEventLog:Security | stats count by src_ip | where count > 10\",\n  \"parsed_json\": {\n    \"base_search\": {\n      \"index\": \"wineventlog\",\n      \"criteria\": [\n        {\n          \"field\": \"EventCode\",\n          \"operator\": \"=\",\n          \"value\": \"4625\"\n        },\n        {\n          \"field\": \"sourcetype\",\n          \"operator\": \"=\",\n          \"value\": \"WinEventLog:Security\"\n        }\n      ]\n    },\n    \"pipeline\": [\n      {\n        \"command\": \"stats\",\n        \"arguments\": {\n          \"function\": \"count\",\n          \"by\": [\n            \"src_ip\"\n          ]\n        }\n      },\n      {\n        \"command\": \"where\",\n        \"arguments\": {\n          \"condition\": \"count > 10\"\n        }\n      }\n    ],\n    \"time_window\": {\n      \"type\": \"sliding\",\n      \"value\": 1,\n      \"unit\": \"hours\"\n    }\n  },\n  \"fields\": {\n    \"reserved_fields\": [\n      \"index\",\n      \"sourcetype\",\n      \"_raw\",\n      \"_time\"\n    ],\n    \"custom_fields\": [\n      \"EventCode\",\n      \"src_ip\",\n      \"count\"\n    ],\n    \"meta_fields\": {\n      \"index\": \"wineventlog\",\n      \"sourcetype\": \"WinEventLog:Security\"\n    }\n  },\n  \"commands\": [\n    {\n      \"name\": \"search\",\n      \"description\": \"Base event filter using field criteria (EventCode=4625 and sourcetype=WinEventLog:Security) against the wineventlog index\"\n    },\n    {\n      \"name\": \"stats\",\n      \"description\": \"Aggregates events by counting occurrences grouped by the src_ip field\"\n    },\n    {\n      \"name\": \"where\",\n      \"description\": \"Filters the aggregated results to include only groups where the count exceeds the threshold of 10\"\n    }\n  ],\n  \"functions\": [\n    {\n      \"name\": \"count\",\n      \"description\": \"Aggregation function that counts the number of events in each group\"\n    }\n  ],\n  \"metadata\": {\n    \"created_by\": \"migration-tool\",\n    \"version\": \"1.0\"\n  },\n  \"usage_type\": \"detection\",\n  \"datasource\": \"wineventlog\",\n  \"summary\": \"This Splunk query searches the wineventlog index for Windows failed authentication events (EventCode 4625) with sourcetype WinEventLog:Security. It aggregates the events using a count function grouped by source IP address (src_ip) and filters the results to display only source IPs that have generated more than 10 failed authentication attempts within a 1-hour sliding window. The output provides a list of suspicious source IPs ranked by the number of failed login attempts they initiated.\",\n  \"intent\": \"Detect brute-force login attacks against Windows hosts by identifying source IP addresses that exceed a threshold of failed authentication attempts within a defined time window.\",\n  \"use_case\": \"Security monitoring for brute-force attack detection on Windows domain-joined systems. Used in a detection alert workflow to automatically trigger notifications when source IPs exhibit authentication patterns consistent with credential-stuffing or password-spray attacks.\"\n}\n```\n\nThis Enriched Normalized JSON output is now ready for handoff to the next node in the pipeline (the Field Mapper Node).",
+  "success": true,
+  "error": "",
+  "skills_loaded": [],
+  "tool_calls": [
+    {
+      "name": "Skill",
+      "input": {
+        "skill": "splunk"
+      }
+    },
+    {
+      "name": "mcp__context-engine__context_engine_agent",
+      "input": {
+        "query": "What are the reserved fields and default fields for Splunk queries?",
+        "source_product": "splunk"
+      }
+    }
+  ]
+}
