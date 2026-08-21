@@ -71,6 +71,18 @@ class AgentRuntime(ABC):
     @abstractmethod
     async def aclose(self) -> None: ...
 
+    def supported_tool_names(self, tools: list[Tool]) -> list[str]:
+        """Names of `tools` this runtime can actually expose to the model.
+
+        Used to build a harness prompt that doesn't claim capabilities the
+        runtime doesn't have (see prompts.py's ``harness()``). A runtime that
+        executes every tool it's given (e.g. AnthropicRuntime) just returns
+        every name; one that can't act on non-terminal Python tools (e.g.
+        ClaudeCliRuntime, whose CLI subprocess owns its own tool loop)
+        overrides this to report only the subset it truly supports.
+        """
+        return [t.name for t in tools]
+
     # ── shared helpers ───────────────────────────────────────────────────
 
     @staticmethod

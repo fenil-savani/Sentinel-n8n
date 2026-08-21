@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterable
 
 import yaml
 
@@ -41,7 +42,20 @@ class ParserRequest:
     notes: str | None = None
     session_id: str | None = None
 
-    def to_prompt(self) -> str:
+    def to_prompt(self, available_tools: Iterable[str], reference_dir: Path) -> str:
+        # Different runtimes offer different file-access tools (e.g.
+        # ClaudeCliRuntime has neither read_reference nor run_python — see
+        # its module docstring). read_reference/run_python resolve a bare
+        # filename against the reference dir themselves; the CLI's native
+        # Read tool does not discover files there by name alone (--add-dir
+        # only grants *access*, it doesn't put the dir in Glob's default
+        # cwd-scoped search) — so it needs the real absolute path instead.
+        names = set(available_tools)
+        has_read_reference = "read_reference" in names
+        has_run_python = "run_python" in names
+        read_hint = "read_reference" if has_read_reference else "the Read tool"
+        inspect_hint = "run_python" if has_run_python else "the Read tool"
+
         lines = [
             "Generate a Microsoft Sentinel parser with these inputs:",
             "",
@@ -52,14 +66,18 @@ class ParserRequest:
         if self.dedup_key:
             lines.append(f"- Natural unique key for dedup: {self.dedup_key}")
         if self.reference_parser:
+            ref_path = self.reference_parser if has_read_reference \
+                else str(reference_dir / self.reference_parser)
             lines.append(
-                f"- Reference parser to mirror: {self.reference_parser} "
-                "(read it with read_reference BEFORE writing anything)"
+                f"- Reference parser to mirror: {ref_path} "
+                f"(read it with {read_hint} BEFORE writing anything)"
             )
         if self.sample_ref:
+            sample_path = self.sample_ref if has_run_python \
+                else str(reference_dir / self.sample_ref)
             lines.append(
-                f"- Sample data file: {self.sample_ref} "
-                "(inspect it with run_python; union the keys across EVERY record)"
+                f"- Sample data file: {sample_path} "
+                f"(inspect it with {inspect_hint}; union the keys across EVERY record)"
             )
         if self.notes:
             lines.append(f"- Additional context: {self.notes}")
@@ -88,16 +106,25 @@ async def generate_parser(
     )
 
     toolbox = Toolbox(settings, logs)
+    tools = toolbox.parser_tools()
+    available = runtime.supported_tool_names(tools)
+    log.info(
+        "parser draft %s: starting | provider=%s model=%s product=%s logtype=%s table=%s",
+        draft_id, type(runtime).__name__, settings.llm_model_parser,
+        request.product, request.logtype, request.table,
+    )
     try:
         result = await runtime.run(
-            system=parser_system(settings.prompts_dir),
-            user=request.to_prompt(),
-            tools=toolbox.parser_tools(),
-            model=settings.llm_model,
+            system=parser_system(settings.prompts_dir, available),
+            user=request.to_prompt(available, settings.reference_dir),
+            tools=tools,
+            model=settings.llm_model_parser,
         )
-    except LLMUnavailable:
+    except LLMUnavailable as exc:
         # Backend problem, not a generation problem. Drop the placeholder row so
         # it does not look like a failed attempt the analyst needs to review.
+        log.warning("parser draft %s: LLM unavailable | provider=%s model=%s error=%s",
+                    draft_id, type(runtime).__name__, settings.llm_model_parser, exc)
         await store.update_draft(draft_id, status="failed",
                                  validation={"error": "llm_unavailable"})
         raise
@@ -105,6 +132,7 @@ async def generate_parser(
     # The skill's "stop and ask" rule fired — a pause, not a failure.
     if result.terminal_tool == "request_input":
         payload = result.payload or {}
+        log.info("parser draft %s: needs_input | tool_trace=%s", draft_id, result.tool_trace)
         await store.update_draft(
             draft_id, status="needs_input",
             validation={"needs_input": payload, "tool_trace": result.tool_trace},
@@ -117,6 +145,10 @@ async def generate_parser(
         }
 
     if result.terminal_tool != "submit_parser":
+        log.warning(
+            "parser draft %s: no_submission | terminal_tool=%s tool_trace=%s text=%s",
+            draft_id, result.terminal_tool, result.tool_trace, result.text[:300],
+        )
         await store.update_draft(
             draft_id, status="failed",
             validation={"error": "no_submission",

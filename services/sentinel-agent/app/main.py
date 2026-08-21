@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 import yaml
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .azure.logs import LogsClient
 from .azure.token import TokenProvider
@@ -27,7 +27,7 @@ from .config import get_settings
 from .generators.parser import ParserRequest, generate_parser
 from .generators.workbook import WorkbookRequest, generate_workbook
 from .lint.rules import lint_parser, lint_workbook
-from .llm import build_runtime
+from .llm import build_runtime, openai_compat
 from .llm.base import LLMUnavailable
 from .store import Store
 
@@ -67,8 +67,9 @@ async def lifespan(app: FastAPI):
     app.state.panel_runtime = build_runtime(settings, max_tokens=4000)
 
     log.info(
-        "ready: model=%s panel_model=%s azure=%s",
-        settings.llm_model, settings.llm_model_panel,
+        "ready: provider=%s parser_model=%s manifest_model=%s panel_model=%s azure=%s",
+        settings.llm_provider, settings.llm_model_parser,
+        settings.llm_model_workbook_manifest, settings.llm_model_panel,
         settings.azure_configured(),
     )
     try:
@@ -122,17 +123,71 @@ class LintBody(BaseModel):
     draft_id: str
 
 
+class ChatCompletionBody(BaseModel):
+    """OpenAI chat-completions request shape, as sent by n8n's OpenAI Chat
+    Model node (LangChain's ChatOpenAI) — see app/llm/openai_compat.py."""
+    model_config = ConfigDict(extra="ignore")
+
+    model: str
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: Any = None
+    stream: bool = False
+
+
 # ── health ──────────────────────────────────────────────────────────────────
 
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
     return {
         "ok": True,
-        "model": settings.llm_model,
+        "llm_provider": settings.llm_provider,
+        "parser_model": settings.llm_model_parser,
+        "workbook_manifest_model": settings.llm_model_workbook_manifest,
         "panel_model": settings.llm_model_panel,
         "azure_configured": settings.azure_configured(),
         "panel_query_validation": settings.validate_panel_queries,
     }
+
+
+# ── orchestrator chat proxy ──────────────────────────────────────────────────
+# Lets n8n's own orchestrator chat model (an "OpenAI Chat Model" node pointed
+# at this endpoint) run on the claude CLI too — see app/llm/openai_compat.py.
+# Independent of settings.llm_provider: this always uses the CLI.
+
+@app.get("/v1/models")
+async def get_models() -> dict[str, Any]:
+    """Minimal OpenAI-compatible /v1/models. Not used for generation — it
+    exists only because n8n's OpenAI credential "test connection" button
+    GETs this exact path (see OpenAiApi.credentials.js's `test` block) and
+    would otherwise report a 404 as a connection failure."""
+    return {
+        "object": "list",
+        "data": [{
+            "id": settings.orchestrator_model,
+            "object": "model",
+            "owned_by": "anthropic",
+        }],
+    }
+
+
+@app.post("/v1/chat/completions")
+async def post_chat_completions(body: ChatCompletionBody) -> dict[str, Any]:
+    if body.stream:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"message": "streaming is not supported by this endpoint",
+                               "type": "invalid_request_error"}},
+        )
+    try:
+        return await openai_compat.handle(body.model_dump(), settings)
+    except LLMUnavailable as exc:
+        # OpenAI-shaped error body so LangChain surfaces a sensible message
+        # instead of a raw parse failure.
+        raise HTTPException(
+            status_code=503,
+            detail={"error": {"message": str(exc), "type": "api_error"}},
+        ) from exc
 
 
 # ── generation ──────────────────────────────────────────────────────────────

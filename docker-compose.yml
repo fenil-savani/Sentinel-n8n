@@ -37,8 +37,8 @@ services:
       # The two skill files are the single source of truth for humans and for
       # the sidecar. Mounted read-only, read at request time — edit them and the
       # next generation picks the change up without a rebuild.
-      - ./skills/generate-sentinel-parser.md:/prompts/generate-sentinel-parser.md:ro
-      - ./skills/generate-sentinel-workbook.md:/prompts/generate-sentinel-workbook.md:ro
+      - ./skills/generate-sentinel-parser/SKILL.md:/prompts/generate-sentinel-parser.md:ro
+      - ./skills/generate-sentinel-workbook/SKILL.md:/prompts/generate-sentinel-workbook.md:ro
       - ./data:/reference:ro
     depends_on:
       postgres:

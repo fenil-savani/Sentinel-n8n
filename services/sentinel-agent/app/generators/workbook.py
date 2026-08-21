@@ -22,7 +22,8 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterable
 
 from ..azure.logs import LogsClient
 from ..config import Settings
@@ -50,7 +51,17 @@ class WorkbookRequest:
     notes: str | None = None
     session_id: str | None = None
 
-    def to_prompt(self) -> str:
+    def to_prompt(self, available_tools: Iterable[str], reference_dir: Path) -> str:
+        # See ParserRequest.to_prompt: not every runtime offers
+        # read_reference/run_python (e.g. ClaudeCliRuntime has neither), and
+        # the CLI's native Read tool needs the real absolute path since
+        # --add-dir doesn't make a bare filename discoverable.
+        names = set(available_tools)
+        has_read_reference = "read_reference" in names
+        has_run_python = "run_python" in names
+        read_hint = "read_reference" if has_read_reference else "the Read tool"
+        inspect_hint = "run_python" if has_run_python else "the Read tool"
+
         lines = [
             f"Plan a Microsoft Sentinel workbook in **{self.mode}** mode.",
             "",
@@ -68,9 +79,11 @@ class WorkbookRequest:
         if self.tabs:
             lines.append(f"- Tabs: {', '.join(self.tabs)}")
         if self.reference_ref:
+            ref_path = self.reference_ref if has_read_reference \
+                else str(reference_dir / self.reference_ref)
             lines.append(
-                f"- Reference dashboard: {self.reference_ref} "
-                "(read it with read_reference, or inspect it with run_python if large)"
+                f"- Reference dashboard: {ref_path} "
+                f"(read it with {read_hint}, or inspect it with {inspect_hint} if large)"
             )
         if self.source_dashboard:
             lines += [
@@ -102,22 +115,34 @@ async def generate_workbook(
         session_id=request.session_id,
     )
     toolbox = Toolbox(settings, logs)
+    manifest_tools = toolbox.manifest_tools()
+    available = runtime.supported_tool_names(manifest_tools)
 
     # ── stage 1: manifest ────────────────────────────────────────────────
+    log.info(
+        "workbook draft %s: starting manifest | provider=%s model=%s product=%s topic=%s mode=%s",
+        draft_id, type(runtime).__name__, settings.llm_model_workbook_manifest,
+        request.product, request.topic, request.mode,
+    )
     try:
         plan = await runtime.run(
-            system=workbook_manifest_system(settings.prompts_dir),
-            user=request.to_prompt(),
-            tools=toolbox.manifest_tools(),
-            model=settings.llm_model,
+            system=workbook_manifest_system(settings.prompts_dir, available),
+            user=request.to_prompt(available, settings.reference_dir),
+            tools=manifest_tools,
+            model=settings.llm_model_workbook_manifest,
         )
-    except LLMUnavailable:
+    except LLMUnavailable as exc:
+        log.warning(
+            "workbook draft %s: LLM unavailable at manifest stage | provider=%s model=%s error=%s",
+            draft_id, type(runtime).__name__, settings.llm_model_workbook_manifest, exc,
+        )
         await store.update_draft(draft_id, status="failed",
                                  validation={"error": "llm_unavailable", "stage": "manifest"})
         raise
 
     if plan.terminal_tool == "request_input":
         payload = plan.payload or {}
+        log.info("workbook draft %s: needs_input at manifest stage", draft_id)
         await store.update_draft(draft_id, status="needs_input",
                                  validation={"needs_input": payload, "stage": "manifest"})
         return {"draft_id": draft_id, "status": "needs_input",
@@ -125,6 +150,10 @@ async def generate_workbook(
                 "question": payload.get("question", "")}
 
     if plan.terminal_tool != "submit_manifest":
+        log.warning(
+            "workbook draft %s: no_manifest | terminal_tool=%s text=%s",
+            draft_id, plan.terminal_tool, plan.text[:300],
+        )
         await store.update_draft(
             draft_id, status="failed",
             validation={"error": "no_manifest", "stage": "manifest",
@@ -226,8 +255,8 @@ async def _generate_panels(
     toolbox: Toolbox,
     logs: LogsClient | None,
 ) -> list[dict[str, Any]]:
-    system = workbook_panel_system(settings.prompts_dir)
     tools = toolbox.panel_tools()
+    system = workbook_panel_system(settings.prompts_dir, panel_runtime.supported_tool_names(tools))
     semaphore = asyncio.Semaphore(max(1, settings.panel_concurrency))
 
     async def one(spec: dict[str, Any]) -> dict[str, Any]:
@@ -285,13 +314,15 @@ async def _generate_panel(
             continue
 
         if result.terminal_tool != "submit_panel":
-            last_error = "did not call submit_panel"
+            last_error = f"did not call submit_panel (tool_trace={result.tool_trace})"
+            log.warning("panel %s attempt %d: %s", panel_id, attempt, last_error)
             continue
 
         payload = result.payload or {}
         body = (payload.get("kql") or "").strip()
         if not body:
             last_error = "submitted an empty query"
+            log.warning("panel %s attempt %d: %s", panel_id, attempt, last_error)
             continue
 
         query = T.compose_query(request.parser, body, parameters)

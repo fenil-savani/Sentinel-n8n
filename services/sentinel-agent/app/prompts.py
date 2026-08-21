@@ -22,6 +22,7 @@ iterating on a skill during development does not need a container restart.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Iterable
 
 _cache: dict[Path, tuple[float, str]] = {}
 
@@ -44,28 +45,50 @@ def _load(path: Path) -> str:
     return text
 
 
-_HARNESS = """
+_HARNESS_HEAD = """
 ---
 
 # Harness notes (appended — these override any conflicting instruction above)
 
 You are running as an automated agent, not in an interactive editor.
 
-- **`AskUserQuestion` is not available.** Where the instructions above tell you
-  to ask the user, call the `request_input` tool instead. The rule itself is
-  unchanged and is important: when required information is missing or
-  ambiguous, stop and ask. Never invent field names, table names, or sample
-  values to work around a gap.
 - **You cannot write files.** Return your work through the submit tool named
   below. Do not wrap it in markdown fences and do not add commentary around it.
-- **Reference files** are read with `read_reference` using paths relative to the
-  reference directory (so `corelight_conn.yaml`, not `data/corelight_conn.yaml`).
-- **`run_python`** is available and preferred for schema derivation, counting,
-  and JSON validation. Use it instead of doing that work token by token.
-- **`run_kql`** executes against the real workspace. Use it to check your query
-  before submitting; it catches syntax errors and proves the table and columns
-  exist.
 """
+
+# One bullet per optional tool, keyed by the Tool.name it documents. Included
+# in the harness only when that tool is actually offered at this stage/by
+# this runtime — see harness() below. Without this, a stage or runtime that
+# doesn't have e.g. run_kql would still be told it does.
+_HARNESS_TOOL_NOTES: dict[str, str] = {
+    "request_input": (
+        "- **`AskUserQuestion` is not available.** Where the instructions above tell you\n"
+        "  to ask the user, call the `request_input` tool instead. The rule itself is\n"
+        "  unchanged and is important: when required information is missing or\n"
+        "  ambiguous, stop and ask. Never invent field names, table names, or sample\n"
+        "  values to work around a gap."
+    ),
+    "read_reference": (
+        "- **Reference files** are read with `read_reference` using paths relative to the\n"
+        "  reference directory (so `corelight_conn.yaml`, not `data/corelight_conn.yaml`)."
+    ),
+    "run_python": (
+        "- **`run_python`** is available and preferred for schema derivation, counting,\n"
+        "  and JSON validation. Use it instead of doing that work token by token."
+    ),
+    "run_kql": (
+        "- **`run_kql`** executes against the real workspace. Use it to check your query\n"
+        "  before submitting; it catches syntax errors and proves the table and columns\n"
+        "  exist."
+    ),
+}
+
+
+def harness(tool_names: Iterable[str]) -> str:
+    """Harness addendum, truthful for exactly the tools passed in."""
+    names = set(tool_names)
+    bullets = [note for key, note in _HARNESS_TOOL_NOTES.items() if key in names]
+    return _HARNESS_HEAD + "\n".join(bullets) + "\n"
 
 _PARSER_STAGE = """
 ## This request
@@ -115,16 +138,16 @@ Scope, precisely:
 """
 
 
-def parser_system(prompts_dir: Path) -> str:
+def parser_system(prompts_dir: Path, tool_names: Iterable[str]) -> str:
     skill = _load(Path(prompts_dir) / "generate-sentinel-parser.md")
-    return f"{skill}\n{_HARNESS}\n{_PARSER_STAGE}"
+    return f"{skill}\n{harness(tool_names)}\n{_PARSER_STAGE}"
 
 
-def workbook_manifest_system(prompts_dir: Path) -> str:
+def workbook_manifest_system(prompts_dir: Path, tool_names: Iterable[str]) -> str:
     skill = _load(Path(prompts_dir) / "generate-sentinel-workbook.md")
-    return f"{skill}\n{_HARNESS}\n{_MANIFEST_STAGE}"
+    return f"{skill}\n{harness(tool_names)}\n{_MANIFEST_STAGE}"
 
 
-def workbook_panel_system(prompts_dir: Path) -> str:
+def workbook_panel_system(prompts_dir: Path, tool_names: Iterable[str]) -> str:
     skill = _load(Path(prompts_dir) / "generate-sentinel-workbook.md")
-    return f"{skill}\n{_HARNESS}\n{_PANEL_STAGE}"
+    return f"{skill}\n{harness(tool_names)}\n{_PANEL_STAGE}"

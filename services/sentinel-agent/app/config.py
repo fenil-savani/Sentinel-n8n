@@ -12,10 +12,34 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # ── LLM ──────────────────────────────────────────────────────────────
-    llm_model: str = "claude-opus-5"
-    llm_model_panel: str = "claude-sonnet-5"
+    # One model setting per flow, sized to that flow's task complexity —
+    # deliberately not a single shared `llm_model`, so a flow can be tuned
+    # (or swapped to a cheaper/stronger model) without affecting the others.
+    llm_model_parser: str = "claude-opus-5"              # parser generation: reasoning-heavy
+    llm_model_workbook_manifest: str = "claude-opus-5"   # panel planning: reasoning-heavy
+    llm_model_panel: str = "claude-sonnet-5"             # per-panel loop: high-volume, cheaper
+
+    # "anthropic": Anthropic API, billed against anthropic_api_key.
+    # "claude_cli": shells out to a local `claude` binary using a Claude Code
+    # subscription (no API key) — see app/llm/claude_cli.py for the
+    # trade-offs (no in-generation run_kql/run_python self-check).
+    llm_provider: str = "anthropic"
 
     anthropic_api_key: str = ""
+
+    # ── Claude CLI (only used when llm_provider == "claude_cli") ─────────
+    claude_cli_bin: str = ""          # empty = resolve via PATH at first use
+    claude_cli_timeout: int = 600
+    claude_code_oauth_token: str = ""  # from `claude setup-token`
+
+    # Model used by /v1/chat/completions — the OpenAI-compatible proxy that
+    # lets n8n's own orchestrator chat model run through the claude CLI too
+    # (see app/llm/openai_compat.py). The incoming request's `model` field is
+    # whatever n8n's OpenAI Chat Model node happens to be configured with —
+    # a meaningless placeholder from that node's perspective — so it's
+    # ignored in favor of this setting. Independent of claude_cli_* above:
+    # this endpoint always uses the CLI, regardless of llm_provider.
+    orchestrator_model: str = "claude-opus-5"
 
     # ── Azure: management plane ──────────────────────────────────────────
     azure_tenant_id: str = ""
