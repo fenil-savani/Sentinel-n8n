@@ -190,6 +190,67 @@ class Toolbox:
             submit,
         ]
 
+    def analytic_rule_tools(self) -> list[Tool]:
+        submit = Tool(
+            name="submit_analytic_rule",
+            description=(
+                "Submit the finished analytic rule. Pass the COMPLETE YAML file content — "
+                "id, name, description, severity, requiredDataConnectors, queryFrequency, "
+                "queryPeriod, triggerOperator, triggerThreshold, tactics, techniques, query, "
+                "entityMappings, version, kind — with no markdown fences and no commentary. "
+                "Call this exactly once, after you have validated the query with run_kql."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "yaml": {"type": "string", "description": "Complete YAML document."},
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional caveats for the analyst.",
+                    },
+                },
+                "required": ["yaml"],
+            },
+            terminal=True,
+        )
+        return [
+            self._list_reference(),
+            self._read_reference(),
+            self._run_python(),
+            self._run_kql(),
+            self._request_input(),
+            submit,
+        ]
+
+    def tdd_tools(self) -> list[Tool]:
+        submit = Tool(
+            name="submit_tdd",
+            description=(
+                "Submit the finished Technical Design Document. Pass the COMPLETE markdown "
+                "document — no markdown fences around the whole thing, no commentary before or "
+                "after. Call this exactly once."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "markdown": {"type": "string", "description": "Complete TDD markdown document."},
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional caveats for the analyst (e.g. which sections are <TBD>).",
+                    },
+                },
+                "required": ["markdown"],
+            },
+            terminal=True,
+        )
+        return [
+            self._list_reference(),
+            self._read_reference(),
+            self._run_python(),
+            self._request_input(),
+            submit,
+        ]
+
     def manifest_tools(self) -> list[Tool]:
         submit = Tool(
             name="submit_manifest",

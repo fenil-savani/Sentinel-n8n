@@ -138,9 +138,41 @@ Scope, precisely:
 """
 
 
+_ANALYTIC_RULE_STAGE = """
+## This request
+
+Produce **one analytic rule** and submit it with `submit_analytic_rule`. Follow every rule in the
+rule construction section above — real MITRE tactics/techniques, `requiredDataConnectors` matching the
+actual table, no hardcoded values in the query, an explicit final `project`, and at least one entity
+mapping whose columns the query actually outputs.
+
+Validate the query with `run_kql` before you submit.
+"""
+
+
 def parser_system(prompts_dir: Path, tool_names: Iterable[str]) -> str:
     skill = _load(Path(prompts_dir) / "generate-sentinel-parser.md")
     return f"{skill}\n{harness(tool_names)}\n{_PARSER_STAGE}"
+
+
+def analytic_rule_system(prompts_dir: Path, tool_names: Iterable[str]) -> str:
+    skill = _load(Path(prompts_dir) / "generate-sentinel-analytic-rule.md")
+    return f"{skill}\n{harness(tool_names)}\n{_ANALYTIC_RULE_STAGE}"
+
+
+_TDD_STAGE = """
+## This request
+
+Produce **one Technical Design Document** and submit it with `submit_tdd`. Follow the skeleton and
+rules above exactly — keep the `Overall System Architecture` and `Data Connector Architecture`
+headings named exactly as shown, include only components actually in scope, and use `<TBD>` rather
+than inventing any API/schema detail you weren't given.
+"""
+
+
+def tdd_system(prompts_dir: Path, tool_names: Iterable[str]) -> str:
+    skill = _load(Path(prompts_dir) / "generate-sentinel-tdd.md")
+    return f"{skill}\n{harness(tool_names)}\n{_TDD_STAGE}"
 
 
 def workbook_manifest_system(prompts_dir: Path, tool_names: Iterable[str]) -> str:

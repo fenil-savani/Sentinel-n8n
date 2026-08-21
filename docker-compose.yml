@@ -33,13 +33,20 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/sentinel
       PROMPTS_DIR: /prompts
       REFERENCE_DIR: /reference
+      OUTPUT_DIR: /output
     volumes:
       # The two skill files are the single source of truth for humans and for
       # the sidecar. Mounted read-only, read at request time — edit them and the
       # next generation picks the change up without a rebuild.
       - ./skills/generate-sentinel-parser/SKILL.md:/prompts/generate-sentinel-parser.md:ro
       - ./skills/generate-sentinel-workbook/SKILL.md:/prompts/generate-sentinel-workbook.md:ro
+      - ./skills/generate-sentinel-analytic-rule/SKILL.md:/prompts/generate-sentinel-analytic-rule.md:ro
+      - ./skills/generate-sentinel-tdd/SKILL.md:/prompts/generate-sentinel-tdd.md:ro
       - ./data:/reference:ro
+      # Where generated artifacts land for the analyst to read directly —
+      # laid out like a real Azure-Sentinel solution repo. Read-write,
+      # unlike the skill/reference mounts above.
+      - ./output:/output
     depends_on:
       postgres:
         condition: service_healthy

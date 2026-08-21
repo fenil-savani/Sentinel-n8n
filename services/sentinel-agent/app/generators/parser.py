@@ -22,10 +22,12 @@ import yaml
 from ..azure.logs import LogsClient
 from ..config import Settings
 from ..lint.rules import lint_parser
-from ..llm.base import AgentRuntime, LLMUnavailable
+from ..llm.base import AgentRuntime, LLMUnavailable, RunResult
+from ..output import write_artifact
 from ..prompts import parser_system
 from ..store import Store
 from ..tools import Toolbox
+from ._shared import handle_pause_or_failure, revision_prompt
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ class ParserRequest:
     reference_parser: str | None = None
     dedup_key: str | None = None
     notes: str | None = None
+    solution: str | None = None
     session_id: str | None = None
 
     def to_prompt(self, available_tools: Iterable[str], reference_dir: Path) -> str:
@@ -129,37 +132,71 @@ async def generate_parser(
                                  validation={"error": "llm_unavailable"})
         raise
 
-    # The skill's "stop and ask" rule fired — a pause, not a failure.
-    if result.terminal_tool == "request_input":
-        payload = result.payload or {}
-        log.info("parser draft %s: needs_input | tool_trace=%s", draft_id, result.tool_trace)
-        await store.update_draft(
-            draft_id, status="needs_input",
-            validation={"needs_input": payload, "tool_trace": result.tool_trace},
-        )
-        return {
-            "draft_id": draft_id,
-            "status": "needs_input",
-            "missing": payload.get("missing", []),
-            "question": payload.get("question", ""),
-        }
+    return await _finish(
+        draft_id, result=result, table=request.table,
+        solution=request.solution or request.product, settings=settings, store=store, logs=logs,
+        fallback_alias=alias,
+    )
 
-    if result.terminal_tool != "submit_parser":
-        log.warning(
-            "parser draft %s: no_submission | terminal_tool=%s tool_trace=%s text=%s",
-            draft_id, result.terminal_tool, result.tool_trace, result.text[:300],
+
+async def revise_parser(
+    draft_id: str,
+    feedback: str,
+    *,
+    runtime: AgentRuntime,
+    settings: Settings,
+    store: Store,
+    logs: LogsClient | None,
+) -> dict[str, Any]:
+    draft = await store.get_draft(draft_id)
+    if draft is None or draft["kind"] != "parser":
+        return {"draft_id": draft_id, "status": "failed",
+                "error": f"no parser draft {draft_id}"}
+
+    summary = draft.get("summary") or {}
+    toolbox = Toolbox(settings, logs)
+    tools = toolbox.parser_tools()
+    available = runtime.supported_tool_names(tools)
+    user = revision_prompt(
+        kind_label="Microsoft Sentinel parser", current_artifact=draft["artifact"] or "",
+        feedback=feedback, submit_tool="submit_parser",
+    )
+    log.info("parser draft %s: revising | feedback=%s", draft_id, feedback[:200])
+    try:
+        result = await runtime.run(
+            system=parser_system(settings.prompts_dir, available),
+            user=user, tools=tools, model=settings.llm_model_parser,
         )
-        await store.update_draft(
-            draft_id, status="failed",
-            validation={"error": "no_submission",
-                        "message": "the model stopped without calling submit_parser",
-                        "text": result.text[:2000], "tool_trace": result.tool_trace},
-        )
-        return {
-            "draft_id": draft_id,
-            "status": "failed",
-            "error": "The model finished without submitting a parser.",
-        }
+    except LLMUnavailable as exc:
+        log.warning("parser draft %s: LLM unavailable during revision | error=%s", draft_id, exc)
+        await store.update_draft(draft_id, status="failed",
+                                 validation={"error": "llm_unavailable"})
+        raise
+
+    return await _finish(
+        draft_id, result=result, table=summary.get("table", ""),
+        solution=summary.get("solution") or draft["name"], settings=settings, store=store, logs=logs,
+        fallback_alias=draft["name"],
+    )
+
+
+async def _finish(
+    draft_id: str,
+    *,
+    result: RunResult,
+    table: str,
+    solution: str,
+    settings: Settings,
+    store: Store,
+    logs: LogsClient | None,
+    fallback_alias: str,
+) -> dict[str, Any]:
+    paused = handle_pause_or_failure(draft_id, result, "submit_parser")
+    if paused is not None:
+        response, validation = paused
+        log.info("parser draft %s: %s", draft_id, response["status"])
+        await store.update_draft(draft_id, status=response["status"], validation=validation)
+        return response
 
     raw = _strip_fences((result.payload or {}).get("yaml", ""))
 
@@ -189,7 +226,7 @@ async def generate_parser(
     }
 
     query = str(doc.get("FunctionQuery") or "")
-    actual_alias = str(doc.get("FunctionAlias") or alias)
+    actual_alias = str(doc.get("FunctionAlias") or fallback_alias)
 
     # Only spend a Log Analytics round trip on a document that survived linting.
     if lint_ok and logs is not None and query.strip():
@@ -209,12 +246,22 @@ async def generate_parser(
     summary = {
         "alias": actual_alias,
         "title": ((doc.get("Function") or {}) or {}).get("Title"),
-        "table": request.table,
+        "table": table,
+        "solution": solution,
         "category": doc.get("Category"),
         "query_lines": len(query.splitlines()),
         "errors": sum(1 for f in validation["findings"] if f["severity"] == "error"),
         "warnings": sum(1 for f in validation["findings"] if f["severity"] == "warn"),
     }
+
+    if status == "validated":
+        try:
+            summary["file"] = write_artifact(
+                settings.output_dir, solution=solution,
+                kind="parser", name=actual_alias, content=raw,
+            )
+        except OSError as exc:
+            log.warning("parser draft %s: could not write output file: %s", draft_id, exc)
 
     await store.update_draft(
         draft_id, status=status, name=actual_alias, artifact=raw,

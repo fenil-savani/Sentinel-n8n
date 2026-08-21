@@ -24,9 +24,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from .azure.logs import LogsClient
 from .azure.token import TokenProvider
 from .config import get_settings
-from .generators.parser import ParserRequest, generate_parser
+from .generators.analytic_rule import AnalyticRuleRequest, generate_analytic_rule, revise_analytic_rule
+from .generators.parser import ParserRequest, generate_parser, revise_parser
+from .generators.tdd import TddRequest, check_tdd_structure, generate_tdd, revise_tdd
 from .generators.workbook import WorkbookRequest, generate_workbook
-from .lint.rules import lint_parser, lint_workbook
+from .lint.rules import lint_analytic_rule, lint_parser, lint_workbook
 from .llm import build_runtime, openai_compat
 from .llm.base import LLMUnavailable
 from .store import Store
@@ -97,6 +99,42 @@ class ParserBody(BaseModel):
     reference_parser: str | None = None
     dedup_key: str | None = None
     notes: str | None = None
+    solution: str | None = Field(None, description="Solution/vendor name, for the output folder")
+    session_id: str | None = None
+
+
+class AnalyticRuleBody(BaseModel):
+    name: str = Field(..., description="Rule name, e.g. Corelight Suspicious DNS Tunneling")
+    scenario: str = Field(..., description="Plain-language detection scenario")
+    table: str = Field(..., description="Table or parser the rule queries")
+    connector_id: str | None = None
+    severity: str = "Medium"
+    query_frequency: str | None = None
+    query_period: str | None = None
+    trigger_operator: str | None = None
+    trigger_threshold: int | None = None
+    create_incident: bool = True
+    tactics: list[str] = Field(default_factory=list)
+    techniques: list[str] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
+    watchlist: str | None = None
+    notes: str | None = None
+    solution: str | None = Field(None, description="Solution/vendor name, for the output folder")
+    session_id: str | None = None
+
+
+class TddBody(BaseModel):
+    vendor: str = Field(..., description="e.g. Corelight")
+    product: str = Field(..., description="e.g. Open NDR Platform")
+    purpose: str = Field(..., description="What data flows into Sentinel and why")
+    components: list[str] = Field(default_factory=list,
+                                   description="Subset of Data Connector, Parser, Analytic Rule, Workbook, Playbook")
+    ingestion_mechanism: str | None = None
+    api_base_url: str | None = None
+    api_auth_type: str | None = None
+    api_endpoints: str | None = None
+    notes: str | None = None
+    solution: str | None = Field(None, description="Solution/vendor name, for the output folder")
     session_id: str | None = None
 
 
@@ -111,6 +149,12 @@ class WorkbookBody(BaseModel):
     parser_fields: list[str] = Field(default_factory=list)
     tabs: list[str] = Field(default_factory=list)
     notes: str | None = None
+    solution: str | None = Field(None, description="Solution/vendor name, for the output folder")
+    session_id: str | None = None
+
+
+class RevisionBody(BaseModel):
+    feedback: str = Field(..., description="The analyst's requested change, in plain language")
     session_id: str | None = None
 
 
@@ -208,6 +252,33 @@ async def post_generate_parser(body: ParserBody) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.post("/generate/analytic-rule")
+async def post_generate_analytic_rule(body: AnalyticRuleBody) -> dict[str, Any]:
+    try:
+        return await generate_analytic_rule(
+            AnalyticRuleRequest(**body.model_dump()),
+            runtime=app.state.runtime,
+            settings=settings,
+            store=app.state.store,
+            logs=app.state.logs,
+        )
+    except LLMUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/generate/tdd")
+async def post_generate_tdd(body: TddBody) -> dict[str, Any]:
+    try:
+        return await generate_tdd(
+            TddRequest(**body.model_dump()),
+            runtime=app.state.runtime,
+            settings=settings,
+            store=app.state.store,
+        )
+    except LLMUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.post("/generate/workbook")
 async def post_generate_workbook(body: WorkbookBody) -> dict[str, Any]:
     try:
@@ -217,6 +288,47 @@ async def post_generate_workbook(body: WorkbookBody) -> dict[str, Any]:
             panel_runtime=app.state.panel_runtime,
             settings=settings,
             store=app.state.store,
+            logs=app.state.logs,
+        )
+    except LLMUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+_REVISERS = {
+    "parser": revise_parser,
+    "analytic_rule": revise_analytic_rule,
+}
+
+
+@app.post("/revise/{draft_id}")
+async def post_revise(draft_id: str, body: RevisionBody) -> dict[str, Any]:
+    draft = await app.state.store.get_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"no draft {draft_id}")
+
+    kind = draft["kind"]
+    if kind == "tdd":
+        try:
+            return await revise_tdd(
+                draft_id, body.feedback,
+                runtime=app.state.runtime, settings=settings, store=app.state.store,
+            )
+        except LLMUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    reviser = _REVISERS.get(kind)
+    if reviser is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"revision is not supported for '{kind}' drafts yet — "
+                "regenerate with adjusted inputs instead."
+            ),
+        )
+    try:
+        return await reviser(
+            draft_id, body.feedback,
+            runtime=app.state.runtime, settings=settings, store=app.state.store,
             logs=app.state.logs,
         )
     except LLMUnavailable as exc:
@@ -245,14 +357,23 @@ async def post_lint(body: LintBody) -> dict[str, Any]:
     if not artifact:
         raise HTTPException(status_code=409, detail="draft has no artifact to lint")
 
-    if draft["kind"] == "parser":
+    if draft["kind"] == "tdd":
+        components = (draft.get("summary") or {}).get("components") or []
+        findings = check_tdd_structure(artifact, components)
+        return {"pass": not any(f["severity"] == "error" for f in findings), "findings": findings}
+
+    if draft["kind"] in ("parser", "analytic_rule"):
         try:
             doc = yaml.safe_load(artifact)
         except yaml.YAMLError as exc:
             return {"pass": False, "findings": [
                 {"rule": "parser.yaml", "severity": "error", "message": str(exc)[:400]}
             ]}
-        ok, findings = lint_parser(doc if isinstance(doc, dict) else {}, artifact)
+        doc = doc if isinstance(doc, dict) else {}
+        if draft["kind"] == "analytic_rule":
+            ok, findings = lint_analytic_rule(doc, artifact)
+        else:
+            ok, findings = lint_parser(doc, artifact)
     else:
         try:
             doc = json.loads(artifact)

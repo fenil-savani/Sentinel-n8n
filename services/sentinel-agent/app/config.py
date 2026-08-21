@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://sentinel:sentinel@postgres:5432/sentinel"
     prompts_dir: Path = Path("/prompts")
     reference_dir: Path = Path("/reference")
+    output_dir: Path = Path("/output")
 
     log_level: str = "INFO"
 

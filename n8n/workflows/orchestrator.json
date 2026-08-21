@@ -30,7 +30,7 @@
         {
             "parameters": {
                 "options": {
-                    "systemMessage": "You coordinate the generation and deployment of Microsoft Sentinel components (KQL parsers and workbooks) for a security analyst.\n\n# What you do and do not do\n\nYou do not write KQL or workbook JSON yourself. Specialist generators do that. Your job is to run a thorough intake conversation, call the right tool once intake is complete, explain the result, and get explicit approval before anything is deployed.\n\n# Artifacts are large — never ask for them\n\nGenerated parsers and workbooks are far too big to put in a chat message; a workbook can be 180 KB. Every tool returns a `draft_id` and a small summary instead. Work with the draft_id. Never ask a tool for a full artifact and never try to print one.\n\n# The sequence\n\n## Phase 1 — Intake (no generation tool calls yet)\n\nFirst, work out whether the analyst wants a **parser**, a **workbook**, or both — most opening messages make this clear (\"build a parser for...\", \"I need a dashboard for...\"); ask if it's genuinely ambiguous.\n\nThen gather everything that meaningfully affects generation quality for that artifact — not only the bare minimum needed to call the tool. Missing an optional field isn't a blocker by itself, but not asking about one that exists is a missed chance at a better first result — a generator bouncing back with `needs_input` costs the analyst a round trip a good question up front would have avoided.\n\n- For a **parser**: product, log type, and the custom table name (required, usually ending `_CL`) — plus ask whether there's an existing reference parser to mirror, sample log data or a schema/spec to derive fields from, a natural dedup key (e.g. a connection/session UID), and any other context worth passing along.\n- For a **workbook**: the parser it queries, product, and topic (required) — plus ask whether this is a fresh build or a replica of an existing third-party dashboard, a specific panel list (or should the generator propose panels from the parser's fields instead), single-tab or multi-tab, and any other context.\n\nAsk naturally in the flow of conversation, not as a rigid checklist dumped in one message, and don't push on a field that plainly doesn't apply (e.g. no dedup key exists for this log type). Do surface every field that exists and matters, rather than waiting for the generator to have to ask for it. You're ready for Phase 2 once you've covered every relevant field above — you do not need the analyst to say a special word like \"go\"; a normal answer to your last question is enough to proceed.\n\n## Phase 2 — Generate and report\n\n1. **Generate** with `generate_parser` or `generate_workbook`, passing along everything collected in Phase 1.\n2. **Report the result.** Check the returned `status`:\n   - `validated` — generated cleanly and passed every check. If it's a workbook and `failed_panels` in the summary is greater than 0, name which panels failed before going further — the analyst may want to regenerate rather than deploy an incomplete dashboard.\n   - `needs_input` — the generator stopped because information was missing. Relay its question to the analyst, get the answer, and call the tool again with it. This is normal and not an error — it means Phase 1 missed something.\n   - `failed` — say why, using the findings. Do not offer to deploy.\n3. **Ask for explicit confirmation to deploy.** Name the draft and what it will do (e.g. \"deploy the corelight_conn parser to your Sentinel workspace\"). Only proceed on a clear yes.\n4. **Deploy** with `deploy_draft`, passing the `draft_id`. It checks create vs. update and writes in one step, then reports what happened. Relay the outcome plainly.\n\n# Rules\n\n- **Never call `deploy_draft` without an explicit yes from the analyst.** This deploys straight to a live Sentinel workspace, and there is no rollback — a bad deploy is fixed by correcting the draft and deploying again, not by undoing this one.\n- Never deploy a `failed` draft.\n- If a tool returns an error, report it plainly and say what would fix it. Do not retry a failing deploy in a loop.\n\n# Style\n\nBe brief and concrete. Lead with the outcome. Report counts and names, not raw JSON. When something fails, state what failed and what the analyst can do about it."
+                    "systemMessage": "You coordinate the end-to-end intake, generation, and deployment of a Microsoft Sentinel solution (TDD, Data Connector, Parsers, Analytic Rules, Workbooks, Playbooks, Packaging) for a security analyst or solution builder.\n\n# What you do and do not do\n\nYou do not write KQL, workbook JSON, connector code, or playbook logic yourself. Specialist generators do that. Right now four specialists are wired up as tools: `generate_tdd`, `generate_parser`, `generate_workbook`, and `generate_analytic_rule` — plus `revise_draft`, which sends feedback on an existing draft back through the same generator instead of starting over. Everything else in the solution (Data Connector, Playbooks, Packaging, Process/Ops) has no generation tool yet — for those sections your job is to run a thorough intake, then hand back a clean, structured written brief the analyst can carry into that skill when it's ready. Never invent values to fill a gap: if something is unknown, write `<TBD>` rather than guessing — this applies especially to API contracts, schemas, IDs, and third-party endpoints for playbooks, where a wrong guess is worse than an honest gap.\n\n# Artifacts are large — never ask for them\n\nGenerated parsers and workbooks are far too big to put in a chat message; a workbook can be 180 KB. Every tool returns a `draft_id` and a small summary instead. Work with the draft_id. Never ask a tool for a full artifact and never try to print one.\n\n# Where the analyst reads the actual file\n\nA validated draft's summary includes a `file` path (e.g. `output/Corelight/Parsers/corelight_conn.yaml`) — that's where the real artifact was written on disk, laid out like a real Azure-Sentinel solution repo. Always tell the analyst that path once a draft validates, so they can open, read, and review it directly instead of asking you to paste it. If they ask a question about the content or want a change, that's what `revise_draft` is for (see below) — don't try to answer from memory of what you generated, and don't paste the file back into chat.\n\n# The sequence\n\nWork through the solution in this order, skipping any component the analyst confirms is out of scope. Ask naturally in the flow of conversation, in small groups of related questions — never dump a full section as one long checklist. Don't push on a field that plainly doesn't apply. Move on once a section's relevant fields are covered; you don't need a special \"go\" word, a normal answer to your last question is enough.\n\n## Phase 0 — Solution scope (always first)\n\nEstablish the basics everything else depends on:\n- Vendor/product name + one-line description\n- Which components this solution actually needs: Data Connector, Parser(s), Analytic Rule(s), Workbook(s), Playbook(s) — not every solution needs all five\n- Publisher ID + Offer ID (real values from Partner Center — write `<TBD>` if not yet known, but note packaging will block without them)\n- Target audience/use case, support tier/contact\n- Azure cloud(s) to support: Commercial only, or also Gov Cloud (`.us`)\n\n**If a TDD is in scope, it comes first and gates everything else.** Once scope is known, run TDD intake and call `generate_tdd` before any other `generate_*` tool. Do not call `generate_parser`, `generate_workbook`, `generate_analytic_rule`, or any future module tool until the analyst has explicitly reviewed and approved the TDD draft in this conversation — a plain \"looks good\"/\"approved\" is enough, you do not need a special command. This mirrors the deploy-confirmation rule below: it's enforced by you choosing not to call the tool, not by the backend rejecting the call.\n\n## Phase 1 — Work through each in-scope component\n\nFor each component the analyst confirmed is in scope, gather the fields below. Skip components not in scope.\n\n**TDD** (if in scope — see the Phase 0 gate above): integration purpose; ingestion mechanism (Azure Function vs CCF vs other); API base URL/auth type/main endpoints (or `<TBD>`); source material available (API docs, existing connector folder, Jira epic); known Sentinel platform limitations. `generate_tdd` produces markdown only — no diagrams, no `.docx` — the analyst reads it straight from the output folder.\n\n**Data Connector** — first confirm Azure Function (Python) vs Codeless Connector Framework (CCF):\n- *Function App*: API base URL(s) and Gov Cloud variant; auth type (API key/OAuth2/Basic/JWT/service account) and its details; where secrets live (Key Vault via Managed Identity preferred); rate limits and retry guidance; pagination style; incremental-pull support; sample raw response(s); expected volume (records/day); reserved-keyword fields; desired `_CL` table name(s) (≤52 chars); Log Ingestion API (DCE/DCR) vs legacy HTTP Data Collector API (legacy is EOL 2026-09-14 — flag if the client insists on it); dev workspace/region; Gov Cloud requirement; polling frequency; new connector vs update to an existing published zip.\n- *CCF*: pull vs push. If pull: endpoint + method; auth type — confirm it's Basic/APIKey/OAuth2/JWT, and flag immediately if the only auth mode is cert-signed tokens (not supported by CCF); API key placement details or OAuth2 grant/token endpoint/scopes; response shape (JSON/CSV/XML/Parquet) and JSONPath to events; pagination mechanism and whether the cursor persists server-side (affects backfill); rate-limit headers; GCP Pub/Sub details or storage account/container details if applicable. If push: how the vendor authenticates to the DCE, expected event shape. Both directions: sample raw payload(s), desired table name(s), single custom table vs custom+ASIM split, IP allowlist needs (CCF egress uses the `Scuba` service tag), whether historical backfill is needed alongside live polling.\n\n**Parsers** — first confirm ASIM (normalized) vs custom (single-vendor):\n- *ASIM*: which schema applies (Authentication/DNS/NetworkSession/ProcessEvent/FileEvent/etc. or closest match); raw field names/sample values for every Mandatory/Recommended field in that schema; exact Vendor+Product naming for `EventVendor`/`EventProduct`; whether this vendor already has an ASIM parser (avoid duplicates); which standard filter parameters matter for this source.\n- *Custom*: one row per distinct log/event type; full field list with types and which are always-present vs sometimes-missing; desired `FunctionName`/`FunctionAlias` (snake_case, `<vendor>_<logtype>`); source `_CL` table(s); reserved-keyword renames already applied at ingestion; enum/code fields needing lookup-table translation.\n- Either way, also capture the fields `generate_parser` itself needs: product, log type, the custom table name, an existing reference parser to mirror (if any), sample log data or a schema/spec to derive fields from, and a natural dedup key (e.g. a connection/session UID) if one exists.\n\n**Analytic Rules** (one pass per rule wanted): the detection scenario in plain language; desired severity; relevant MITRE ATT&CK tactics/techniques (or confirm you should research them from the scenario); which table(s)/parser(s) and connector it depends on; trigger logic (threshold, `queryFrequency`, `queryPeriod`); whether it should auto-create an incident; entities to map (IP/Account/Host/URL/FileHash) and which columns hold them; any watchlists needed for exclusions.\n\n**Workbooks**: the parser it queries, product, and topic — plus audience/use case (SOC triage vs investigation vs executive), panel list with chart type/metric/grouping for each (or should the generator propose panels from the parser's fields), whether any panel triggers an action and shows a result (needs a paired Playbook), fresh build vs replica of an existing third-party dashboard, single- vs multi-tab, time-range defaults, and whether light/dark preview images will be captured pre-merge.\n\n**Playbooks** (one pass per playbook): trigger (incident-based, alert-based, scheduled, on-demand, or entity-triggered); target systems and the exact action per system; **the actual API spec/docs for every third-party system involved — never invent third-party endpoints, mark `<TBD>` if not supplied**; auth details per system and where secrets will live (Key Vault required — never raw secrets as ARM parameters); whether actions loop over multiple entities and sequencing/rate-limit needs; whether an action is async and its status-check endpoint/states; desired incident updates (comments, severity/status/classification, tags); approval workflow needs (e.g. Teams Adaptive Card wait-for-response); ticketing priority/severity mapping; who will grant the Logic App's managed identity the Sentinel Responder role and who owns any connector sign-in.\n\n**Packaging**: confirmed publisherId/offerId; final version number (≥3.0.0 if CCF-based); logo file (SVG, <500KB, `xlink:href` stripped); sample data (≥5 representative rows per custom table, no PII); release notes content; Content Hub category/domain classification.\n\n**Process/Ops**: Jira ticket/epic + Confluence link; target PR reviewers; whether a security review sign-off is triggered and who signs off; QA ownership; rollback contact/plan.\n\n## Phase 2 — Generate and report (TDD, parsers, workbooks, and analytic rules only)\n\nOnce a component's fields are covered (and, for anything other than the TDD itself, once the TDD gate above is satisfied):\n1. **Generate** with `generate_tdd`, `generate_parser`, `generate_workbook`, or `generate_analytic_rule`, passing along everything collected — including `solution` (the vendor/product name from Phase 0), so the output lands in the right folder.\n2. **Report the result.** Check the returned `status`:\n   - `validated` — generated cleanly and passed every check. State the `summary.file` path so the analyst can go read it. If it's a workbook and `failed_panels` in the summary is greater than 0, name which panels failed before going further — the analyst may want to regenerate rather than deploy an incomplete dashboard.\n   - `needs_input` — the generator stopped because information was missing. Relay its question to the analyst, get the answer, and call the tool again with it. This is normal and not an error — it means Phase 1 missed something.\n   - `failed` — say why, using the findings. Do not offer to deploy.\n\nFor every other component (Data Connector, Playbooks, Packaging, Process/Ops), instead present the collected answers back as a clear, labeled brief (one block per section, `<TBD>` for anything unresolved) so the analyst can hand it to that skill — `sentinel-data-connector`/`sentinel-ccf-connector`, `sentinel-playbook`, `sentinel-packaging`, `sentinel-process-ops` — directly.\n\n## Revising a draft\n\nWhen the analyst reacts to a validated (or failed) draft with a change — \"make severity High\", \"add a panel for X\", \"the query should also filter on Y\" — call `revise_draft` with that draft's `draft_id` and the feedback in plain language, rather than re-running the full intake. It updates the same draft in place and returns the same shape as the original `generate_*` call. It currently supports `tdd`, `parser`, and `analytic_rule` drafts; for a `workbook` draft it returns a 409 — in that case, regenerate with `generate_workbook` using adjusted inputs instead, and say so.\n\n## Multiple items — one child chat session per item\n\nWhen the solution needs more than one of the same kind of thing — several playbooks, several workbooks — don't try to run all of their intakes in this one conversation. After the shared/solution-level intake is done, for each item mint a child `session_id` of the form `<this session's id>-<kind>-<n>` (e.g. `sol-corelight-playbook-2`) and give the analyst a link built from `https://10.50.15.15:<port>/chat?session={child_session_id}` (the `<port>` is a placeholder — use whatever port the analyst tells you their portal runs on; ask if you don't know it). Tell them to open that link in its own tab to work on that one item — intake, generate, revise, review — without cluttering this conversation. This depends on their chat portal actually reading `?session=` from its own URL; if they say the link didn't work, just state the session id in chat text instead so they can enter it manually.\n\nIf YOUR OWN session id matches the pattern `<parent>-<kind>-<n>`, you are a child session scoped to exactly one artifact. On your first turn, call `list_drafts` with `session_id` set to the parsed-out `<parent>` to recover the solution's context (the approved TDD, sibling drafts) before doing anything else, and confine yourself to that one artifact — don't redo full Phase 0 intake.\n\n## Phase 3 — Deploy (parsers, workbooks, and analytic rules only)\n\n3. **Ask for explicit confirmation to deploy.** Name the draft and what it will do (e.g. \"deploy the corelight_conn parser to your Sentinel workspace\"). Only proceed on a clear yes.\n4. **Deploy** with `deploy_draft`, passing the `draft_id`. It checks create vs. update and writes in one step, then reports what happened. Relay the outcome plainly.\n\n# Rules\n\n- **Never fabricate** API contracts, schemas, field names, IDs, or third-party endpoints. Write `<TBD>` and say what's missing instead.\n- **If a TDD is in scope, never call any `generate_*` tool other than `generate_tdd` before the analyst has approved it.** See the Phase 0 gate. If no TDD is in scope for this solution, this rule doesn't apply.\n- **Never call `deploy_draft` without an explicit yes from the analyst.** This deploys straight to a live Sentinel workspace, and there is no rollback — a bad deploy is fixed by correcting the draft and deploying again, not by undoing this one.\n- Never deploy a `failed` draft.\n- If a tool returns an error, report it plainly and say what would fix it. Do not retry a failing deploy in a loop.\n\n# Style\n\nBe brief and concrete. Lead with the outcome. Report counts and names, not raw JSON. When something fails, state what failed and what the analyst can do about it."
                 }
             },
             "id": "orch-agent",
@@ -94,7 +94,7 @@
                 "url": "http://sentinel-agent:8000/generate/parser",
                 "sendBody": true,
                 "specifyBody": "json",
-                "jsonBody": "{\n  \"product\": \"{product}\",\n  \"logtype\": \"{logtype}\",\n  \"table\": \"{table}\",\n  \"reference_parser\": \"{reference_parser}\",\n  \"sample_ref\": \"{sample_ref}\",\n  \"notes\": \"{notes}\",\n  \"session_id\": \"{session_id}\"\n}",
+                "jsonBody": "{\n  \"product\": \"{product}\",\n  \"logtype\": \"{logtype}\",\n  \"table\": \"{table}\",\n  \"reference_parser\": \"{reference_parser}\",\n  \"sample_ref\": \"{sample_ref}\",\n  \"notes\": \"{notes}\",\n  \"solution\": \"{solution}\",\n  \"session_id\": \"{session_id}\"\n}",
                 "placeholderDefinitions": {
                     "values": [
                         {
@@ -128,6 +128,11 @@
                             "type": "string"
                         },
                         {
+                            "name": "solution",
+                            "description": "Solution/vendor name — used to name the output folder the artifact is written to",
+                            "type": "string"
+                        },
+                        {
                             "name": "session_id",
                             "description": "The current chat sessionId",
                             "type": "string"
@@ -151,7 +156,7 @@
                 "url": "http://sentinel-agent:8000/generate/workbook",
                 "sendBody": true,
                 "specifyBody": "json",
-                "jsonBody": "{\n  \"parser\": \"{parser}\",\n  \"product\": \"{product}\",\n  \"topic\": \"{topic}\",\n  \"mode\": \"{mode}\",\n  \"panels\": {panels},\n  \"tabs\": {tabs},\n  \"notes\": \"{notes}\",\n  \"session_id\": \"{session_id}\"\n}",
+                "jsonBody": "{\n  \"parser\": \"{parser}\",\n  \"product\": \"{product}\",\n  \"topic\": \"{topic}\",\n  \"mode\": \"{mode}\",\n  \"panels\": {panels},\n  \"tabs\": {tabs},\n  \"notes\": \"{notes}\",\n  \"solution\": \"{solution}\",\n  \"session_id\": \"{session_id}\"\n}",
                 "placeholderDefinitions": {
                     "values": [
                         {
@@ -190,6 +195,11 @@
                             "type": "string"
                         },
                         {
+                            "name": "solution",
+                            "description": "Solution/vendor name — used to name the output folder the artifact is written to",
+                            "type": "string"
+                        },
+                        {
                             "name": "session_id",
                             "description": "The current chat sessionId",
                             "type": "string"
@@ -204,6 +214,190 @@
             "position": [
                 0,
                 240
+            ]
+        },
+        {
+            "parameters": {
+                "toolDescription": "Generate a Microsoft Sentinel Technical Design Document (TDD) as markdown. Call this first, before any other generate_* tool, once solution scope is known. Returns a draft_id and a small summary — never the full document. If it returns status 'needs_input', relay the question to the analyst and call again with the answer.",
+                "method": "POST",
+                "url": "http://sentinel-agent:8000/generate/tdd",
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "{\n  \"vendor\": \"{vendor}\",\n  \"product\": \"{product}\",\n  \"purpose\": \"{purpose}\",\n  \"components\": {components},\n  \"ingestion_mechanism\": \"{ingestion_mechanism}\",\n  \"api_base_url\": \"{api_base_url}\",\n  \"api_auth_type\": \"{api_auth_type}\",\n  \"api_endpoints\": \"{api_endpoints}\",\n  \"notes\": \"{notes}\",\n  \"solution\": \"{solution}\",\n  \"session_id\": \"{session_id}\"\n}",
+                "placeholderDefinitions": {
+                    "values": [
+                        {
+                            "name": "vendor",
+                            "description": "Vendor name, e.g. Corelight",
+                            "type": "string"
+                        },
+                        {
+                            "name": "product",
+                            "description": "Product name, e.g. Open NDR Platform",
+                            "type": "string"
+                        },
+                        {
+                            "name": "purpose",
+                            "description": "What data flows into Sentinel and why",
+                            "type": "string"
+                        },
+                        {
+                            "name": "components",
+                            "description": "JSON array, subset of [\"Data Connector\",\"Parser\",\"Analytic Rule\",\"Workbook\",\"Playbook\"]",
+                            "type": "json"
+                        },
+                        {
+                            "name": "ingestion_mechanism",
+                            "description": "Azure Function, CCF, or other. Empty string if not yet known.",
+                            "type": "string"
+                        },
+                        {
+                            "name": "api_base_url",
+                            "description": "Empty string if not yet known.",
+                            "type": "string"
+                        },
+                        {
+                            "name": "api_auth_type",
+                            "description": "Empty string if not yet known.",
+                            "type": "string"
+                        },
+                        {
+                            "name": "api_endpoints",
+                            "description": "Free-text summary of known endpoints. Empty string if not yet known.",
+                            "type": "string"
+                        },
+                        {
+                            "name": "notes",
+                            "description": "Any extra context from the analyst. Empty string if none.",
+                            "type": "string"
+                        },
+                        {
+                            "name": "solution",
+                            "description": "Solution/vendor name — used to name the output folder the artifact is written to",
+                            "type": "string"
+                        },
+                        {
+                            "name": "session_id",
+                            "description": "The current chat sessionId",
+                            "type": "string"
+                        }
+                    ]
+                }
+            },
+            "id": "orch-tool-tdd",
+            "name": "generate_tdd",
+            "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+            "typeVersion": 1.1,
+            "position": [
+                -160,
+                560
+            ]
+        },
+        {
+            "parameters": {
+                "toolDescription": "Generate a Microsoft Sentinel scheduled analytic (detection) rule from a plain-language detection scenario. Call this when the analyst wants a detection rule. Returns a draft_id and a summary — never the rule YAML itself. If it returns status 'needs_input', relay the question to the analyst and call again with the answer.",
+                "method": "POST",
+                "url": "http://sentinel-agent:8000/generate/analytic-rule",
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "{\n  \"name\": \"{name}\",\n  \"scenario\": \"{scenario}\",\n  \"table\": \"{table}\",\n  \"connector_id\": \"{connector_id}\",\n  \"severity\": \"{severity}\",\n  \"query_frequency\": \"{query_frequency}\",\n  \"query_period\": \"{query_period}\",\n  \"trigger_operator\": \"{trigger_operator}\",\n  \"trigger_threshold\": {trigger_threshold},\n  \"create_incident\": {create_incident},\n  \"tactics\": {tactics},\n  \"techniques\": {techniques},\n  \"entities\": {entities},\n  \"watchlist\": \"{watchlist}\",\n  \"notes\": \"{notes}\",\n  \"solution\": \"{solution}\",\n  \"session_id\": \"{session_id}\"\n}",
+                "placeholderDefinitions": {
+                    "values": [
+                        {
+                            "name": "name",
+                            "description": "Rule name, e.g. Corelight Suspicious DNS Tunneling",
+                            "type": "string"
+                        },
+                        {
+                            "name": "scenario",
+                            "description": "Plain-language detection scenario: what behavior/threat, what data source, what condition triggers it",
+                            "type": "string"
+                        },
+                        {
+                            "name": "table",
+                            "description": "Table or parser the rule queries, e.g. corelight_dns or Corelight_v2_dns_CL",
+                            "type": "string"
+                        },
+                        {
+                            "name": "connector_id",
+                            "description": "The connectorId this rule depends on. Empty string if unknown — the tool will ask.",
+                            "type": "string"
+                        },
+                        {
+                            "name": "severity",
+                            "description": "Low, Medium, High, or Informational. Default Medium if not specified.",
+                            "type": "string"
+                        },
+                        {
+                            "name": "query_frequency",
+                            "description": "How often the rule runs, e.g. 1h, 5m, 1d. Empty string if not specified.",
+                            "type": "string"
+                        },
+                        {
+                            "name": "query_period",
+                            "description": "Lookback window, e.g. 1h, 1d. Empty string if not specified.",
+                            "type": "string"
+                        },
+                        {
+                            "name": "trigger_operator",
+                            "description": "gt, lt, eq, or ne. Empty string if not specified.",
+                            "type": "string"
+                        },
+                        {
+                            "name": "trigger_threshold",
+                            "description": "Numeric trigger threshold. Use 0 if not specified.",
+                            "type": "number"
+                        },
+                        {
+                            "name": "create_incident",
+                            "description": "Whether the rule should auto-create an incident. Default true.",
+                            "type": "boolean"
+                        },
+                        {
+                            "name": "tactics",
+                            "description": "JSON array of MITRE tactics already chosen by the analyst, e.g. [\"InitialAccess\"]. Use [] if none given — the generator will research them.",
+                            "type": "json"
+                        },
+                        {
+                            "name": "techniques",
+                            "description": "JSON array of MITRE technique ids already chosen, e.g. [\"T1078\"]. Use [] if none given.",
+                            "type": "json"
+                        },
+                        {
+                            "name": "entities",
+                            "description": "JSON array of entity descriptions, e.g. [\"IP:SourceIp\"]. Use [] if the analyst did not specify.",
+                            "type": "json"
+                        },
+                        {
+                            "name": "watchlist",
+                            "description": "Watchlist name to use for exclusions instead of hardcoding values. Empty string if none.",
+                            "type": "string"
+                        },
+                        {
+                            "name": "notes",
+                            "description": "Any extra context from the analyst. Empty string if none.",
+                            "type": "string"
+                        },
+                        {
+                            "name": "solution",
+                            "description": "Solution/vendor name — used to name the output folder the artifact is written to",
+                            "type": "string"
+                        },
+                        {
+                            "name": "session_id",
+                            "description": "The current chat sessionId",
+                            "type": "string"
+                        }
+                    ]
+                }
+            },
+            "id": "orch-tool-analytic-rule",
+            "name": "generate_analytic_rule",
+            "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+            "typeVersion": 1.1,
+            "position": [
+                -160,
+                400
             ]
         },
         {
@@ -303,6 +497,43 @@
             "typeVersion": 1.1,
             "position": [
                 640,
+                240
+            ]
+        },
+        {
+            "parameters": {
+                "toolDescription": "Revise an EXISTING draft (parser, analytic rule, or TDD) based on the analyst's feedback — e.g. 'make severity High', 'add a panel for X'. Pass the draft_id and the feedback in plain language; the generator re-runs with the current artifact as context and updates the SAME draft in place. Returns the same shape as the matching generate_* tool. Not yet supported for workbook drafts — regenerate those with adjusted inputs instead.",
+                "method": "POST",
+                "url": "=http://sentinel-agent:8000/revise/{draft_id}",
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "{\n  \"feedback\": \"{feedback}\",\n  \"session_id\": \"{session_id}\"\n}",
+                "placeholderDefinitions": {
+                    "values": [
+                        {
+                            "name": "draft_id",
+                            "description": "The draft id to revise, e.g. drf_01J...",
+                            "type": "string"
+                        },
+                        {
+                            "name": "feedback",
+                            "description": "The analyst's requested change, in plain language",
+                            "type": "string"
+                        },
+                        {
+                            "name": "session_id",
+                            "description": "The current chat sessionId",
+                            "type": "string"
+                        }
+                    ]
+                }
+            },
+            "id": "orch-tool-revise",
+            "name": "revise_draft",
+            "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+            "typeVersion": 1.1,
+            "position": [
+                960,
                 240
             ]
         },
@@ -442,6 +673,39 @@
                     {
                         "node": "Sentinel Orchestrator",
                         "type": "ai_languageModel",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "generate_analytic_rule": {
+            "ai_tool": [
+                [
+                    {
+                        "node": "Sentinel Orchestrator",
+                        "type": "ai_tool",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "generate_tdd": {
+            "ai_tool": [
+                [
+                    {
+                        "node": "Sentinel Orchestrator",
+                        "type": "ai_tool",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "revise_draft": {
+            "ai_tool": [
+                [
+                    {
+                        "node": "Sentinel Orchestrator",
+                        "type": "ai_tool",
                         "index": 0
                     }
                 ]

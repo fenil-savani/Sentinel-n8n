@@ -133,6 +133,100 @@ def _bare_extends(query: str) -> set[str]:
     return offenders
 
 
+# ── analytic rule ───────────────────────────────────────────────────────────
+
+REQUIRED_RULE_KEYS = ("id", "name", "description", "severity", "requiredDataConnectors",
+                      "queryFrequency", "queryPeriod", "triggerOperator", "triggerThreshold",
+                      "tactics", "techniques", "query", "entityMappings", "version", "kind")
+
+_VALID_SEVERITIES = {"Informational", "Low", "Medium", "High"}
+_VALID_TACTICS = {
+    "InitialAccess", "Execution", "Persistence", "PrivilegeEscalation", "DefenseEvasion",
+    "CredentialAccess", "Discovery", "LateralMovement", "Collection", "CommandAndControl",
+    "Exfiltration", "Impact",
+}
+_TECHNIQUE_ID = re.compile(r"^T\d{4}(\.\d{3})?$")
+_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def lint_analytic_rule(doc: dict[str, Any], raw: str) -> tuple[bool, list[Finding]]:
+    findings: list[Finding] = []
+
+    for key in REQUIRED_RULE_KEYS:
+        if key not in doc:
+            findings.append(Finding("rule.required_key", "error", f"missing top-level key '{key}'"))
+
+    rule_id = str(doc.get("id") or "")
+    if rule_id and not _UUID.match(rule_id):
+        findings.append(Finding("rule.id", "error", f"'id' is not a valid UUID: {rule_id!r}"))
+
+    if doc.get("kind") != "Scheduled":
+        findings.append(Finding("rule.kind", "error",
+                                "'kind' must be 'Scheduled' — NRT/Fusion rules are out of scope"))
+
+    severity = str(doc.get("severity") or "")
+    if severity not in _VALID_SEVERITIES:
+        findings.append(Finding("rule.severity", "error",
+                                f"'severity' must be one of {sorted(_VALID_SEVERITIES)}, got {severity!r}"))
+
+    tactics = doc.get("tactics") or []
+    if not tactics:
+        findings.append(Finding("rule.tactics", "error", "'tactics' must not be empty"))
+    else:
+        bad = [t for t in tactics if t not in _VALID_TACTICS]
+        if bad:
+            findings.append(Finding("rule.tactics", "error",
+                                    f"not valid MITRE tactics: {bad}"))
+
+    techniques = doc.get("techniques") or []
+    if not techniques:
+        findings.append(Finding("rule.techniques", "error", "'techniques' must not be empty"))
+    else:
+        bad_t = [t for t in techniques if not _TECHNIQUE_ID.match(str(t))]
+        if bad_t:
+            findings.append(Finding("rule.techniques", "error",
+                                    f"not valid MITRE technique ids (expect Txxxx or Txxxx.xxx): {bad_t}"))
+
+    connectors = doc.get("requiredDataConnectors") or []
+    if not connectors:
+        findings.append(Finding("rule.connectors", "error", "'requiredDataConnectors' must not be empty"))
+    else:
+        for conn in connectors:
+            if not conn.get("connectorId"):
+                findings.append(Finding("rule.connectors", "error",
+                                        "a requiredDataConnectors entry is missing 'connectorId'"))
+            if not conn.get("dataTypes"):
+                findings.append(Finding("rule.connectors", "error",
+                                        "a requiredDataConnectors entry is missing 'dataTypes'"))
+
+    entity_mappings = doc.get("entityMappings") or []
+    if not entity_mappings:
+        findings.append(Finding("rule.entities", "error", "'entityMappings' must have at least one entry"))
+
+    query = str(doc.get("query") or "")
+    if not query.strip():
+        findings.append(Finding("rule.query", "error", "'query' is empty"))
+    else:
+        if "| project" not in query:
+            findings.append(Finding("rule.final_project", "warn",
+                                    "no final '| project' — downstream entity mappings can break "
+                                    "when upstream column order changes"))
+        mapped_columns = {
+            fm.get("columnName")
+            for entry in entity_mappings
+            for fm in (entry.get("fieldMappings") or [])
+            if fm.get("columnName")
+        }
+        missing_cols = [c for c in mapped_columns if c and c not in query]
+        if missing_cols:
+            findings.append(Finding("rule.entity_columns", "error",
+                                    f"entityMappings reference column(s) not found in the query: "
+                                    f"{sorted(missing_cols)}"))
+
+    findings.extend(_template_safety(raw, "query"))
+    return _ok(findings), findings
+
+
 # ── workbook ────────────────────────────────────────────────────────────────
 
 def lint_workbook(wb: dict[str, Any], *, parser: str | None = None) -> tuple[bool, list[Finding]]:

@@ -29,6 +29,7 @@ from ..azure.logs import LogsClient
 from ..config import Settings
 from ..lint.rules import lint_workbook
 from ..llm.base import AgentRuntime, LLMUnavailable
+from ..output import write_artifact
 from ..prompts import workbook_manifest_system, workbook_panel_system
 from ..store import Store
 from ..tools import Toolbox
@@ -49,6 +50,7 @@ class WorkbookRequest:
     parser_fields: list[str] = field(default_factory=list)
     tabs: list[str] = field(default_factory=list)
     notes: str | None = None
+    solution: str | None = None
     session_id: str | None = None
 
     def to_prompt(self, available_tools: Iterable[str], reference_dir: Path) -> str:
@@ -231,6 +233,15 @@ async def generate_workbook(
         "errors": sum(1 for f in findings if f.severity == "error"),
         "warnings": sum(1 for f in findings if f.severity == "warn"),
     }
+
+    if status == "validated":
+        try:
+            summary["file"] = write_artifact(
+                settings.output_dir, solution=request.solution or request.product,
+                kind="workbook", name=title, content=artifact,
+            )
+        except OSError as exc:
+            log.warning("workbook draft %s: could not write output file: %s", draft_id, exc)
 
     await store.update_draft(
         draft_id, status=status, name=title, artifact=artifact,

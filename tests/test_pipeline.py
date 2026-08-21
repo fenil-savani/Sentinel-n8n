@@ -21,7 +21,9 @@ import yaml
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "services" / "sentinel-agent"))
 
-from app.lint.rules import lint_parser, lint_workbook  # noqa: E402
+from app.generators.tdd import check_tdd_structure  # noqa: E402
+from app.lint.rules import lint_analytic_rule, lint_parser, lint_workbook  # noqa: E402
+from app.output import write_artifact  # noqa: E402
 from app.workbook import panel_templates as T  # noqa: E402
 
 DATA = REPO / "data"
@@ -87,6 +89,174 @@ def test_parser_with_hardcoded_subscription_id_is_blocked() -> None:
     ok, findings = lint_parser(yaml.safe_load(raw), poisoned)
     assert not ok
     assert "template.subscription_id" in {f.rule for f in findings}
+
+
+# ── analytic rule lint ──────────────────────────────────────────────────────
+
+_GOOD_RULE = """
+id: 12345678-1234-1234-1234-123456789012
+name: Corelight Suspicious DNS Tunneling
+description: |
+  Detects excessive DNS query volume from a single host in a short window.
+severity: Medium
+status: Available
+requiredDataConnectors:
+  - connectorId: CorelightConnector
+    dataTypes: [ Corelight_v2_dns_CL ]
+queryFrequency: 1h
+queryPeriod: 1h
+triggerOperator: gt
+triggerThreshold: 0
+tactics: [ Exfiltration, CommandAndControl ]
+techniques: [ T1071.004, T1048 ]
+query: |
+  corelight_dns
+  | where TimeGenerated > ago(1h)
+  | summarize QueryCount = count() by SrcIp = src_ip
+  | where QueryCount > 500
+  | project TimeGenerated, SrcIp, QueryCount
+entityMappings:
+  - entityType: IP
+    fieldMappings: [ { identifier: Address, columnName: SrcIp } ]
+version: 1.0.0
+kind: Scheduled
+"""
+
+
+def test_good_analytic_rule_passes_lint() -> None:
+    doc = yaml.safe_load(_GOOD_RULE)
+    ok, findings = lint_analytic_rule(doc, _GOOD_RULE)
+    errors = [f for f in findings if f.severity == "error"]
+    assert ok, [f"{f.rule}: {f.message}" for f in errors]
+
+
+def test_analytic_rule_missing_required_keys_is_blocked() -> None:
+    ok, findings = lint_analytic_rule({"name": "x"}, "name: x")
+    assert not ok
+    assert "rule.required_key" in {f.rule for f in findings}
+
+
+def test_analytic_rule_bad_severity_is_blocked() -> None:
+    doc = yaml.safe_load(_GOOD_RULE)
+    doc["severity"] = "Critical"
+    ok, findings = lint_analytic_rule(doc, _GOOD_RULE)
+    assert not ok
+    assert "rule.severity" in {f.rule for f in findings}
+
+
+def test_analytic_rule_fake_tactic_is_blocked() -> None:
+    doc = yaml.safe_load(_GOOD_RULE)
+    doc["tactics"] = ["NotARealTactic"]
+    ok, findings = lint_analytic_rule(doc, _GOOD_RULE)
+    assert not ok
+    assert "rule.tactics" in {f.rule for f in findings}
+
+
+def test_analytic_rule_malformed_technique_id_is_blocked() -> None:
+    doc = yaml.safe_load(_GOOD_RULE)
+    doc["techniques"] = ["not-a-technique"]
+    ok, findings = lint_analytic_rule(doc, _GOOD_RULE)
+    assert not ok
+    assert "rule.techniques" in {f.rule for f in findings}
+
+
+def test_analytic_rule_without_entity_mappings_is_blocked() -> None:
+    doc = yaml.safe_load(_GOOD_RULE)
+    doc["entityMappings"] = []
+    ok, findings = lint_analytic_rule(doc, _GOOD_RULE)
+    assert not ok
+    assert "rule.entities" in {f.rule for f in findings}
+
+
+def test_analytic_rule_entity_column_missing_from_query_is_blocked() -> None:
+    doc = yaml.safe_load(_GOOD_RULE)
+    doc["entityMappings"] = [
+        {"entityType": "IP", "fieldMappings": [{"identifier": "Address", "columnName": "NotInQuery"}]}
+    ]
+    ok, findings = lint_analytic_rule(doc, _GOOD_RULE)
+    assert not ok
+    assert "rule.entity_columns" in {f.rule for f in findings}
+
+
+def test_analytic_rule_with_hardcoded_subscription_id_is_blocked() -> None:
+    doc = yaml.safe_load(_GOOD_RULE)
+    poisoned = _GOOD_RULE + "\n# /subscriptions/e0687f99-527c-4ffe-b7d5-d6cb9d563dc2/resourceGroups/x\n"
+    ok, findings = lint_analytic_rule(doc, poisoned)
+    assert not ok
+    assert "template.subscription_id" in {f.rule for f in findings}
+
+
+# ── tdd structure check ─────────────────────────────────────────────────────
+
+_GOOD_TDD = """Corelight Open NDR Microsoft Sentinel Integration
+
+# Version Control
+
+| # | Document Version |
+|---|---|
+| 1 | 1.0.0 |
+
+## Overall System Architecture
+
+one paragraph.
+
+## Data Connector Architecture
+
+one paragraph.
+
+# References
+
+- Azure Sentinel Solutions GitHub
+"""
+
+
+def test_good_tdd_passes_structure_check() -> None:
+    findings = check_tdd_structure(_GOOD_TDD, ["Data Connector", "Parser"])
+    assert not any(f["severity"] == "error" for f in findings)
+
+
+def test_empty_tdd_is_blocked() -> None:
+    findings = check_tdd_structure("", [])
+    assert findings[0]["rule"] == "tdd.empty"
+
+
+def test_tdd_missing_anchor_heading_is_blocked() -> None:
+    findings = check_tdd_structure("# Overview\nnothing else\n", ["Data Connector"])
+    assert "tdd.anchor_heading" in {f["rule"] for f in findings}
+
+
+def test_tdd_data_connector_heading_not_required_when_out_of_scope() -> None:
+    doc = "# Overview\n## Overall System Architecture\nok\n# References\n- x\n"
+    findings = check_tdd_structure(doc, ["Parser"])
+    connector_findings = [f for f in findings if "Data Connector" in f["message"]]
+    assert connector_findings == []
+
+
+# ── output folder writing ───────────────────────────────────────────────────
+
+def test_write_artifact_uses_the_kind_layout(tmp_path) -> None:
+    path = write_artifact(tmp_path, solution="Corelight", kind="parser",
+                           name="corelight_conn", content="id: x\n")
+    assert path == "output/Corelight/Parsers/corelight_conn.yaml"
+    assert (tmp_path / "Corelight" / "Parsers" / "corelight_conn.yaml").read_text() == "id: x\n"
+
+
+@pytest.mark.parametrize(
+    "bad_solution,bad_name",
+    [
+        ("../../etc", "passwd"),
+        ("Corelight", "../../../etc/passwd"),
+        ("..", ".."),
+        ("/etc", "/passwd"),
+        ("Corelight/../../evil", "x"),
+    ],
+)
+def test_write_artifact_cannot_escape_the_output_directory(tmp_path, bad_solution, bad_name) -> None:
+    """New filesystem-writing code fed model-influenced input — this must not
+    be escapable via a crafted vendor/product name."""
+    write_artifact(tmp_path, solution=bad_solution, kind="parser", name=bad_name, content="x")
+    written = list(tmp_path.rglob("*"))
+    assert all(tmp_path.resolve() in p.resolve().parents for p in written if p.is_file())
 
 
 # ── query composition ───────────────────────────────────────────────────────
