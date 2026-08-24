@@ -19,6 +19,7 @@ from typing import Any, Literal
 
 import yaml
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .azure.logs import LogsClient
@@ -215,16 +216,10 @@ async def get_models() -> dict[str, Any]:
     }
 
 
-@app.post("/v1/chat/completions")
-async def post_chat_completions(body: ChatCompletionBody) -> dict[str, Any]:
-    if body.stream:
-        raise HTTPException(
-            status_code=400,
-            detail={"error": {"message": "streaming is not supported by this endpoint",
-                               "type": "invalid_request_error"}},
-        )
+@app.post("/v1/chat/completions", response_model=None)
+async def post_chat_completions(body: ChatCompletionBody) -> dict[str, Any] | StreamingResponse:
     try:
-        return await openai_compat.handle(body.model_dump(), settings)
+        response = await openai_compat.handle(body.model_dump(), settings)
     except LLMUnavailable as exc:
         # OpenAI-shaped error body so LangChain surfaces a sensible message
         # instead of a raw parse failure.
@@ -232,6 +227,20 @@ async def post_chat_completions(body: ChatCompletionBody) -> dict[str, Any]:
             status_code=503,
             detail={"error": {"message": str(exc), "type": "api_error"}},
         ) from exc
+
+    if not body.stream:
+        return response
+
+    # The claude CLI answers in one shot; there's nothing to relay
+    # incrementally. So the completed response above is reframed as an SSE
+    # chunk sequence purely so `stream: true` clients (LangChain's
+    # ChatOpenAI) get the framing they expect instead of a 400.
+    async def _sse():
+        for chunk in openai_compat.to_stream_chunks(response):
+            yield f"data: {json.dumps(chunk)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_sse(), media_type="text/event-stream")
 
 
 # ── generation ──────────────────────────────────────────────────────────────

@@ -210,3 +210,42 @@ async def handle(body: dict[str, Any], settings: Any) -> dict[str, Any]:
     )
 
     return to_openai_response(payload=payload, text=text, model=settings.orchestrator_model, usage=usage)
+
+
+def to_stream_chunks(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Reframe one already-completed `handle()` response as an OpenAI
+    streaming chunk sequence.
+
+    The claude CLI backend answers in a single shot — there's no token-by-
+    token generation to relay — so this hands the whole answer back as one
+    content (or tool_calls) delta rather than pretending otherwise. That
+    still satisfies clients (e.g. LangChain's ChatOpenAI with `stream: true`)
+    that require SSE chunk framing rather than a plain JSON body."""
+    choice = response["choices"][0]
+    message = choice["message"]
+    base = {
+        "id": response["id"],
+        "object": "chat.completion.chunk",
+        "created": response["created"],
+        "model": response["model"],
+    }
+
+    chunks = [{**base, "choices": [
+        {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+    ]}]
+
+    if message.get("tool_calls"):
+        chunks.append({**base, "choices": [{
+            "index": 0,
+            "delta": {"tool_calls": [{**tc, "index": 0} for tc in message["tool_calls"]]},
+            "finish_reason": None,
+        }]})
+    elif message.get("content"):
+        chunks.append({**base, "choices": [{
+            "index": 0, "delta": {"content": message["content"]}, "finish_reason": None,
+        }]})
+
+    chunks.append({**base, "choices": [{
+        "index": 0, "delta": {}, "finish_reason": choice["finish_reason"],
+    }]})
+    return chunks

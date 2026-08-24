@@ -253,6 +253,7 @@ async def _finish(
             )
         except OSError as exc:
             log.warning("analytic_rule draft %s: could not write output file: %s", draft_id, exc)
+            summary["file_error"] = str(exc)
 
     await store.update_draft(
         draft_id, status=status, name=actual_name, artifact=raw,

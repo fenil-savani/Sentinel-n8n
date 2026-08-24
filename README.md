@@ -131,9 +131,20 @@ Edit `.env` and fill in at minimum:
 ### 3. Start the stack
 
 ```bash
+chmod o+w output   # sentinel-agent writes here as uid 10001, not your host user — see note below
 docker compose up -d
 docker compose logs -f sentinel-agent
 ```
+
+> **Why the `chmod`:** `sentinel-agent` runs as a fixed unprivileged uid
+> (`10001`, deliberately sandboxed — it also executes model-generated
+> `run_python` code) that doesn't match your host user, so a freshly
+> checked-out `output/` (owner-only write) blocks it from creating files.
+> Without this, generation calls still succeed (drafts are durably stored in
+> Postgres regardless) but silently fail to also write the file into
+> `output/` — you'd see `could not write output file: [Errno 13] Permission
+> denied` in `sentinel-agent`'s logs and a `file_error` field in the draft's
+> summary, with nothing landing on disk.
 
 Confirm a line like `ready: provider=anthropic parser_model=claude-opus-5
 manifest_model=claude-opus-5 panel_model=claude-sonnet-5 azure=False`. If you

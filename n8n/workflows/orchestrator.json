@@ -63,7 +63,7 @@
             ],
             "credentials": {
                 "openAiApi": {
-                    "id": "tUemu7bc6nxNOdR6",
+                    "id": "tpJAP6zpdRrPFsNR",
                     "name": "OpenAI account"
                 }
             }
@@ -82,7 +82,7 @@
             ],
             "credentials": {
                 "postgres": {
-                    "id": "bzsKMXfCsrTdqCHT",
+                    "id": "7aP26Ei1NgToOr9s",
                     "name": "Postgres account"
                 }
             }

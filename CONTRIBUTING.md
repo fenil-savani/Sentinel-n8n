@@ -74,16 +74,32 @@ docker compose exec postgres psql -U sentinel -d n8n -c \
   "SELECT \"workflowId\", \"createdAt\" FROM workflow_published_version;"
 ```
 
-The UI's Publish button can leave this in a state that's hard to reason about. **Prefer
-the CLI**, which publishes directly from the workflow's current draft state in one
-unambiguous step:
+**Correction (confirmed against this build's actual source, `n8n` 2.35.6): do NOT use
+the CLI for this — use the UI Publish button.** This doc previously recommended the CLI
+as the unambiguous option; that's wrong for this version and produces a state that looks
+successful but isn't:
+
+- `n8n publish:workflow --id=...` calls `WorkflowRepository.publishVersion()`, which only
+  flips `workflow_entity.active` / `activeVersionId`.
+- The ToolWorkflow node (and anything else affected by the ["Workflow is not active and
+  cannot be executed"](#) error) never reads those columns. It reads exclusively from the
+  `workflow_published_version` table via `WorkflowPublishedDataService`.
+- Only the UI Publish button / REST `POST /:workflowId/activate` populates that table —
+  it runs `WorkflowService.activateWorkflow()`, which does everything the CLI does *plus*
+  `_publishViaOutbox(...)`, the step that actually writes the `workflow_published_version`
+  row.
+
+So running the CLI command reports success, bumps `activeVersionId`, and still leaves the
+workflow un-callable as a tool — with nothing in the CLI output to indicate that. Verify
+with the query above (0 rows = not really published, regardless of what the CLI said or
+what `active` shows in `workflow_entity`), and republish every affected workflow from its
+own editor's **Publish** button, not the CLI:
 
 ```bash
-docker compose exec n8n n8n unpublish:workflow --all
 docker compose exec n8n n8n import:workflow --separate --input=/workflows
 # ... relink credentials in the UI, per the table above, then save both workflows ...
-docker compose exec n8n n8n publish:workflow --id=sentinel-orchestrator
-docker compose exec n8n n8n publish:workflow --id=sentinel-deploy
+# Then, in the n8n UI, open EACH workflow individually and click Publish (top right).
+# There is no working CLI equivalent for this build — see the correction above.
 ```
 
 There is no `delete:workflow` CLI command in this n8n version — `import:workflow` upserts

@@ -195,6 +195,7 @@ async def _finish(
             )
         except OSError as exc:
             log.warning("tdd draft %s: could not write output file: %s", draft_id, exc)
+            summary["file_error"] = str(exc)
 
     await store.update_draft(
         draft_id, status=status, name=name, artifact=markdown,
