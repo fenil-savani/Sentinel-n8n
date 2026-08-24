@@ -89,61 +89,25 @@
         },
         {
             "parameters": {
-                "toolDescription": "Generate a Microsoft Sentinel KQL parser from sample data or a schema. Call this when the analyst wants a parser for a custom log table. Returns a draft_id and a summary — never the parser itself. If it returns status 'needs_input', relay the question to the analyst and call again with the answer.",
-                "method": "POST",
-                "url": "http://sentinel-agent:8000/generate/parser",
-                "sendBody": true,
-                "specifyBody": "json",
-                "jsonBody": "{\n  \"product\": \"{product}\",\n  \"logtype\": \"{logtype}\",\n  \"table\": \"{table}\",\n  \"reference_parser\": \"{reference_parser}\",\n  \"sample_ref\": \"{sample_ref}\",\n  \"notes\": \"{notes}\",\n  \"solution\": \"{solution}\",\n  \"session_id\": \"{session_id}\"\n}",
-                "placeholderDefinitions": {
-                    "values": [
-                        {
-                            "name": "product",
-                            "description": "Vendor or product name, e.g. Corelight, Qualys, Infoblox",
-                            "type": "string"
-                        },
-                        {
-                            "name": "logtype",
-                            "description": "Log type or category, e.g. conn, intel, notice, vulnerability",
-                            "type": "string"
-                        },
-                        {
-                            "name": "table",
-                            "description": "Custom table the DCR writes to, e.g. Corelight_v2_conn_CL",
-                            "type": "string"
-                        },
-                        {
-                            "name": "reference_parser",
-                            "description": "Optional existing parser file to mirror, e.g. corelight_conn.yaml. Empty string if none.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "sample_ref",
-                            "description": "Optional sample data file in the reference directory. Empty string if none.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "notes",
-                            "description": "Any extra context from the analyst. Empty string if none.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "solution",
-                            "description": "Solution/vendor name — used to name the output folder the artifact is written to",
-                            "type": "string"
-                        },
-                        {
-                            "name": "session_id",
-                            "description": "The current chat sessionId",
-                            "type": "string"
-                        }
-                    ]
+                "description": "Generate a Microsoft Sentinel KQL parser from sample data or a schema. Call this when the analyst wants a parser for a custom log table. Returns a draft_id and a summary — never the parser itself. If it returns status 'needs_input', relay the question to the analyst and call again with the answer.\n\nCall this tool with a single argument: a JSON-encoded object (as plain text, not wrapped in markdown fences) with exactly these fields:\n- \"product\" (string): Vendor or product name, e.g. Corelight, Qualys, Infoblox\n- \"logtype\" (string): Log type or category, e.g. conn, intel, notice, vulnerability\n- \"table\" (string): Custom table the DCR writes to, e.g. Corelight_v2_conn_CL\n- \"reference_parser\" (string): Optional existing parser file to mirror, e.g. corelight_conn.yaml. Empty string if none.\n- \"sample_ref\" (string): Optional sample data file in the reference directory. Empty string if none.\n- \"notes\" (string): Any extra context from the analyst. Empty string if none.\n- \"solution\" (string): Solution/vendor name — used to name the output folder the artifact is written to\n- \"session_id\" (string): The current chat sessionId\nOmit nothing — pass an empty string \"\" or empty array [] for anything not applicable. Respond with ONLY that JSON object as your input, no surrounding commentary.",
+                "workflowId": {
+                    "__rl": true,
+                    "value": "sentinel-tool-generate-parser",
+                    "mode": "id"
+                },
+                "workflowInputs": {
+                    "mappingMode": "defineBelow",
+                    "value": {},
+                    "matchingColumns": [],
+                    "schema": [],
+                    "attemptToConvertTypes": false,
+                    "convertFieldsToString": false
                 }
             },
             "id": "orch-tool-parser",
             "name": "generate_parser",
-            "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
-            "typeVersion": 1.1,
+            "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+            "typeVersion": 2.2,
             "position": [
                 -160,
                 240
@@ -151,66 +115,25 @@
         },
         {
             "parameters": {
-                "toolDescription": "Generate a Microsoft Sentinel workbook (dashboard) that queries an existing parser. Use mode 'generate' for a new dashboard from a panel list, or 'replicate' to convert a third-party dashboard. Returns a draft_id and a summary — never the workbook JSON. If the summary's failed_panels is greater than 0, some panels failed; report which ones before offering to deploy.",
-                "method": "POST",
-                "url": "http://sentinel-agent:8000/generate/workbook",
-                "sendBody": true,
-                "specifyBody": "json",
-                "jsonBody": "{\n  \"parser\": \"{parser}\",\n  \"product\": \"{product}\",\n  \"topic\": \"{topic}\",\n  \"mode\": \"{mode}\",\n  \"panels\": {panels},\n  \"tabs\": {tabs},\n  \"notes\": \"{notes}\",\n  \"solution\": \"{solution}\",\n  \"session_id\": \"{session_id}\"\n}",
-                "placeholderDefinitions": {
-                    "values": [
-                        {
-                            "name": "parser",
-                            "description": "Parser function name the panels query, e.g. corelight_conn",
-                            "type": "string"
-                        },
-                        {
-                            "name": "product",
-                            "description": "Vendor or product name",
-                            "type": "string"
-                        },
-                        {
-                            "name": "topic",
-                            "description": "Dashboard topic, e.g. Conn, DNS, Overview",
-                            "type": "string"
-                        },
-                        {
-                            "name": "mode",
-                            "description": "Either 'generate' or 'replicate'",
-                            "type": "string"
-                        },
-                        {
-                            "name": "panels",
-                            "description": "JSON array of requested panel titles, e.g. [\"Top IPs\",\"Severity Over Time\"]. Use [] if the analyst did not specify.",
-                            "type": "json"
-                        },
-                        {
-                            "name": "tabs",
-                            "description": "JSON array of tab names for a multi-tab workbook, or [] for single tab.",
-                            "type": "json"
-                        },
-                        {
-                            "name": "notes",
-                            "description": "Extra context. Empty string if none.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "solution",
-                            "description": "Solution/vendor name — used to name the output folder the artifact is written to",
-                            "type": "string"
-                        },
-                        {
-                            "name": "session_id",
-                            "description": "The current chat sessionId",
-                            "type": "string"
-                        }
-                    ]
+                "description": "Generate a Microsoft Sentinel workbook (dashboard) that queries an existing parser. Use mode 'generate' for a new dashboard from a panel list, or 'replicate' to convert a third-party dashboard. Returns a draft_id and a summary — never the workbook JSON. If the summary's failed_panels is greater than 0, some panels failed; report which ones before offering to deploy.\n\nCall this tool with a single argument: a JSON-encoded object (as plain text, not wrapped in markdown fences) with exactly these fields:\n- \"parser\" (string): Parser function name the panels query, e.g. corelight_conn\n- \"product\" (string): Vendor or product name\n- \"topic\" (string): Dashboard topic, e.g. Conn, DNS, Overview\n- \"mode\" (string): Either 'generate' or 'replicate'\n- \"panels\" (json): JSON array of requested panel titles, e.g. [\"Top IPs\",\"Severity Over Time\"]. Use [] if the analyst did not specify.\n- \"tabs\" (json): JSON array of tab names for a multi-tab workbook, or [] for single tab.\n- \"notes\" (string): Extra context. Empty string if none.\n- \"solution\" (string): Solution/vendor name — used to name the output folder the artifact is written to\n- \"session_id\" (string): The current chat sessionId\nOmit nothing — pass an empty string \"\" or empty array [] for anything not applicable. Respond with ONLY that JSON object as your input, no surrounding commentary.",
+                "workflowId": {
+                    "__rl": true,
+                    "value": "sentinel-tool-generate-workbook",
+                    "mode": "id"
+                },
+                "workflowInputs": {
+                    "mappingMode": "defineBelow",
+                    "value": {},
+                    "matchingColumns": [],
+                    "schema": [],
+                    "attemptToConvertTypes": false,
+                    "convertFieldsToString": false
                 }
             },
             "id": "orch-tool-workbook",
             "name": "generate_workbook",
-            "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
-            "typeVersion": 1.1,
+            "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+            "typeVersion": 2.2,
             "position": [
                 0,
                 240
@@ -218,76 +141,25 @@
         },
         {
             "parameters": {
-                "toolDescription": "Generate a Microsoft Sentinel Technical Design Document (TDD) as markdown. Call this first, before any other generate_* tool, once solution scope is known. Returns a draft_id and a small summary — never the full document. If it returns status 'needs_input', relay the question to the analyst and call again with the answer.",
-                "method": "POST",
-                "url": "http://sentinel-agent:8000/generate/tdd",
-                "sendBody": true,
-                "specifyBody": "json",
-                "jsonBody": "{\n  \"vendor\": \"{vendor}\",\n  \"product\": \"{product}\",\n  \"purpose\": \"{purpose}\",\n  \"components\": {components},\n  \"ingestion_mechanism\": \"{ingestion_mechanism}\",\n  \"api_base_url\": \"{api_base_url}\",\n  \"api_auth_type\": \"{api_auth_type}\",\n  \"api_endpoints\": \"{api_endpoints}\",\n  \"notes\": \"{notes}\",\n  \"solution\": \"{solution}\",\n  \"session_id\": \"{session_id}\"\n}",
-                "placeholderDefinitions": {
-                    "values": [
-                        {
-                            "name": "vendor",
-                            "description": "Vendor name, e.g. Corelight",
-                            "type": "string"
-                        },
-                        {
-                            "name": "product",
-                            "description": "Product name, e.g. Open NDR Platform",
-                            "type": "string"
-                        },
-                        {
-                            "name": "purpose",
-                            "description": "What data flows into Sentinel and why",
-                            "type": "string"
-                        },
-                        {
-                            "name": "components",
-                            "description": "JSON array, subset of [\"Data Connector\",\"Parser\",\"Analytic Rule\",\"Workbook\",\"Playbook\"]",
-                            "type": "json"
-                        },
-                        {
-                            "name": "ingestion_mechanism",
-                            "description": "Azure Function, CCF, or other. Empty string if not yet known.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "api_base_url",
-                            "description": "Empty string if not yet known.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "api_auth_type",
-                            "description": "Empty string if not yet known.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "api_endpoints",
-                            "description": "Free-text summary of known endpoints. Empty string if not yet known.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "notes",
-                            "description": "Any extra context from the analyst. Empty string if none.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "solution",
-                            "description": "Solution/vendor name — used to name the output folder the artifact is written to",
-                            "type": "string"
-                        },
-                        {
-                            "name": "session_id",
-                            "description": "The current chat sessionId",
-                            "type": "string"
-                        }
-                    ]
+                "description": "Generate a Microsoft Sentinel Technical Design Document (TDD) as markdown. Call this first, before any other generate_* tool, once solution scope is known. Returns a draft_id and a small summary — never the full document. If it returns status 'needs_input', relay the question to the analyst and call again with the answer.\n\nCall this tool with a single argument: a JSON-encoded object (as plain text, not wrapped in markdown fences) with exactly these fields:\n- \"vendor\" (string): Vendor name, e.g. Corelight\n- \"product\" (string): Product name, e.g. Open NDR Platform\n- \"purpose\" (string): What data flows into Sentinel and why\n- \"components\" (json): JSON array, subset of [\"Data Connector\",\"Parser\",\"Analytic Rule\",\"Workbook\",\"Playbook\"]\n- \"ingestion_mechanism\" (string): Azure Function, CCF, or other. Empty string if not yet known.\n- \"api_base_url\" (string): Empty string if not yet known.\n- \"api_auth_type\" (string): Empty string if not yet known.\n- \"api_endpoints\" (string): Free-text summary of known endpoints. Empty string if not yet known.\n- \"notes\" (string): Any extra context from the analyst. Empty string if none.\n- \"solution\" (string): Solution/vendor name — used to name the output folder the artifact is written to\n- \"session_id\" (string): The current chat sessionId\nOmit nothing — pass an empty string \"\" or empty array [] for anything not applicable. Respond with ONLY that JSON object as your input, no surrounding commentary.",
+                "workflowId": {
+                    "__rl": true,
+                    "value": "sentinel-tool-generate-tdd",
+                    "mode": "id"
+                },
+                "workflowInputs": {
+                    "mappingMode": "defineBelow",
+                    "value": {},
+                    "matchingColumns": [],
+                    "schema": [],
+                    "attemptToConvertTypes": false,
+                    "convertFieldsToString": false
                 }
             },
             "id": "orch-tool-tdd",
             "name": "generate_tdd",
-            "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
-            "typeVersion": 1.1,
+            "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+            "typeVersion": 2.2,
             "position": [
                 -160,
                 560
@@ -295,106 +167,25 @@
         },
         {
             "parameters": {
-                "toolDescription": "Generate a Microsoft Sentinel scheduled analytic (detection) rule from a plain-language detection scenario. Call this when the analyst wants a detection rule. Returns a draft_id and a summary — never the rule YAML itself. If it returns status 'needs_input', relay the question to the analyst and call again with the answer.",
-                "method": "POST",
-                "url": "http://sentinel-agent:8000/generate/analytic-rule",
-                "sendBody": true,
-                "specifyBody": "json",
-                "jsonBody": "{\n  \"name\": \"{name}\",\n  \"scenario\": \"{scenario}\",\n  \"table\": \"{table}\",\n  \"connector_id\": \"{connector_id}\",\n  \"severity\": \"{severity}\",\n  \"query_frequency\": \"{query_frequency}\",\n  \"query_period\": \"{query_period}\",\n  \"trigger_operator\": \"{trigger_operator}\",\n  \"trigger_threshold\": {trigger_threshold},\n  \"create_incident\": {create_incident},\n  \"tactics\": {tactics},\n  \"techniques\": {techniques},\n  \"entities\": {entities},\n  \"watchlist\": \"{watchlist}\",\n  \"notes\": \"{notes}\",\n  \"solution\": \"{solution}\",\n  \"session_id\": \"{session_id}\"\n}",
-                "placeholderDefinitions": {
-                    "values": [
-                        {
-                            "name": "name",
-                            "description": "Rule name, e.g. Corelight Suspicious DNS Tunneling",
-                            "type": "string"
-                        },
-                        {
-                            "name": "scenario",
-                            "description": "Plain-language detection scenario: what behavior/threat, what data source, what condition triggers it",
-                            "type": "string"
-                        },
-                        {
-                            "name": "table",
-                            "description": "Table or parser the rule queries, e.g. corelight_dns or Corelight_v2_dns_CL",
-                            "type": "string"
-                        },
-                        {
-                            "name": "connector_id",
-                            "description": "The connectorId this rule depends on. Empty string if unknown — the tool will ask.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "severity",
-                            "description": "Low, Medium, High, or Informational. Default Medium if not specified.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "query_frequency",
-                            "description": "How often the rule runs, e.g. 1h, 5m, 1d. Empty string if not specified.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "query_period",
-                            "description": "Lookback window, e.g. 1h, 1d. Empty string if not specified.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "trigger_operator",
-                            "description": "gt, lt, eq, or ne. Empty string if not specified.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "trigger_threshold",
-                            "description": "Numeric trigger threshold. Use 0 if not specified.",
-                            "type": "number"
-                        },
-                        {
-                            "name": "create_incident",
-                            "description": "Whether the rule should auto-create an incident. Default true.",
-                            "type": "boolean"
-                        },
-                        {
-                            "name": "tactics",
-                            "description": "JSON array of MITRE tactics already chosen by the analyst, e.g. [\"InitialAccess\"]. Use [] if none given — the generator will research them.",
-                            "type": "json"
-                        },
-                        {
-                            "name": "techniques",
-                            "description": "JSON array of MITRE technique ids already chosen, e.g. [\"T1078\"]. Use [] if none given.",
-                            "type": "json"
-                        },
-                        {
-                            "name": "entities",
-                            "description": "JSON array of entity descriptions, e.g. [\"IP:SourceIp\"]. Use [] if the analyst did not specify.",
-                            "type": "json"
-                        },
-                        {
-                            "name": "watchlist",
-                            "description": "Watchlist name to use for exclusions instead of hardcoding values. Empty string if none.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "notes",
-                            "description": "Any extra context from the analyst. Empty string if none.",
-                            "type": "string"
-                        },
-                        {
-                            "name": "solution",
-                            "description": "Solution/vendor name — used to name the output folder the artifact is written to",
-                            "type": "string"
-                        },
-                        {
-                            "name": "session_id",
-                            "description": "The current chat sessionId",
-                            "type": "string"
-                        }
-                    ]
+                "description": "Generate a Microsoft Sentinel scheduled analytic (detection) rule from a plain-language detection scenario. Call this when the analyst wants a detection rule. Returns a draft_id and a summary — never the rule YAML itself. If it returns status 'needs_input', relay the question to the analyst and call again with the answer.\n\nCall this tool with a single argument: a JSON-encoded object (as plain text, not wrapped in markdown fences) with exactly these fields:\n- \"name\" (string): Rule name, e.g. Corelight Suspicious DNS Tunneling\n- \"scenario\" (string): Plain-language detection scenario: what behavior/threat, what data source, what condition triggers it\n- \"table\" (string): Table or parser the rule queries, e.g. corelight_dns or Corelight_v2_dns_CL\n- \"connector_id\" (string): The connectorId this rule depends on. Empty string if unknown — the tool will ask.\n- \"severity\" (string): Low, Medium, High, or Informational. Default Medium if not specified.\n- \"query_frequency\" (string): How often the rule runs, e.g. 1h, 5m, 1d. Empty string if not specified.\n- \"query_period\" (string): Lookback window, e.g. 1h, 1d. Empty string if not specified.\n- \"trigger_operator\" (string): gt, lt, eq, or ne. Empty string if not specified.\n- \"trigger_threshold\" (number): Numeric trigger threshold. Use 0 if not specified.\n- \"create_incident\" (boolean): Whether the rule should auto-create an incident. Default true.\n- \"tactics\" (json): JSON array of MITRE tactics already chosen by the analyst, e.g. [\"InitialAccess\"]. Use [] if none given — the generator will research them.\n- \"techniques\" (json): JSON array of MITRE technique ids already chosen, e.g. [\"T1078\"]. Use [] if none given.\n- \"entities\" (json): JSON array of entity descriptions, e.g. [\"IP:SourceIp\"]. Use [] if the analyst did not specify.\n- \"watchlist\" (string): Watchlist name to use for exclusions instead of hardcoding values. Empty string if none.\n- \"notes\" (string): Any extra context from the analyst. Empty string if none.\n- \"solution\" (string): Solution/vendor name — used to name the output folder the artifact is written to\n- \"session_id\" (string): The current chat sessionId\nOmit nothing — pass an empty string \"\" or empty array [] for anything not applicable. Respond with ONLY that JSON object as your input, no surrounding commentary.",
+                "workflowId": {
+                    "__rl": true,
+                    "value": "sentinel-tool-generate-analytic-rule",
+                    "mode": "id"
+                },
+                "workflowInputs": {
+                    "mappingMode": "defineBelow",
+                    "value": {},
+                    "matchingColumns": [],
+                    "schema": [],
+                    "attemptToConvertTypes": false,
+                    "convertFieldsToString": false
                 }
             },
             "id": "orch-tool-analytic-rule",
             "name": "generate_analytic_rule",
-            "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
-            "typeVersion": 1.1,
+            "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+            "typeVersion": 2.2,
             "position": [
                 -160,
                 400
@@ -402,26 +193,25 @@
         },
         {
             "parameters": {
-                "toolDescription": "Run a KQL query against the Log Analytics workspace to check it is valid and that the tables and columns exist. Use this to check a query the analyst asks about, or to re-check a draft after an edit.",
-                "method": "POST",
-                "url": "http://sentinel-agent:8000/validate/kql",
-                "sendBody": true,
-                "specifyBody": "json",
-                "jsonBody": "{\n  \"query\": \"{query}\"\n}",
-                "placeholderDefinitions": {
-                    "values": [
-                        {
-                            "name": "query",
-                            "description": "The KQL query to execute",
-                            "type": "string"
-                        }
-                    ]
+                "description": "Run a KQL query against the Log Analytics workspace to check it is valid and that the tables and columns exist. Use this to check a query the analyst asks about, or to re-check a draft after an edit.\n\nCall this tool with a single argument: a JSON-encoded object (as plain text, not wrapped in markdown fences) with exactly these fields:\n- \"query\" (string): The KQL query to execute\nOmit nothing — pass an empty string \"\" or empty array [] for anything not applicable. Respond with ONLY that JSON object as your input, no surrounding commentary.",
+                "workflowId": {
+                    "__rl": true,
+                    "value": "sentinel-tool-validate-kql",
+                    "mode": "id"
+                },
+                "workflowInputs": {
+                    "mappingMode": "defineBelow",
+                    "value": {},
+                    "matchingColumns": [],
+                    "schema": [],
+                    "attemptToConvertTypes": false,
+                    "convertFieldsToString": false
                 }
             },
             "id": "orch-tool-kql",
             "name": "validate_kql",
-            "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
-            "typeVersion": 1.1,
+            "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+            "typeVersion": 2.2,
             "position": [
                 160,
                 240
@@ -429,26 +219,25 @@
         },
         {
             "parameters": {
-                "toolDescription": "Re-run the structural lint on an existing draft and return the findings. Use this when the analyst asks why a draft failed, or after they have edited one.",
-                "method": "POST",
-                "url": "http://sentinel-agent:8000/lint",
-                "sendBody": true,
-                "specifyBody": "json",
-                "jsonBody": "{\n  \"draft_id\": \"{draft_id}\"\n}",
-                "placeholderDefinitions": {
-                    "values": [
-                        {
-                            "name": "draft_id",
-                            "description": "The draft id, e.g. drf_01J...",
-                            "type": "string"
-                        }
-                    ]
+                "description": "Re-run the structural lint on an existing draft and return the findings. Use this when the analyst asks why a draft failed, or after they have edited one.\n\nCall this tool with a single argument: a JSON-encoded object (as plain text, not wrapped in markdown fences) with exactly these fields:\n- \"draft_id\" (string): The draft id, e.g. drf_01J...\nOmit nothing — pass an empty string \"\" or empty array [] for anything not applicable. Respond with ONLY that JSON object as your input, no surrounding commentary.",
+                "workflowId": {
+                    "__rl": true,
+                    "value": "sentinel-tool-lint-draft",
+                    "mode": "id"
+                },
+                "workflowInputs": {
+                    "mappingMode": "defineBelow",
+                    "value": {},
+                    "matchingColumns": [],
+                    "schema": [],
+                    "attemptToConvertTypes": false,
+                    "convertFieldsToString": false
                 }
             },
             "id": "orch-tool-lint",
             "name": "lint_draft",
-            "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
-            "typeVersion": 1.1,
+            "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+            "typeVersion": 2.2,
             "position": [
                 320,
                 240
@@ -456,22 +245,25 @@
         },
         {
             "parameters": {
-                "toolDescription": "Get the small summary of a draft: name, status, panel count, validation findings. Safe to call any time. Does NOT return the artifact itself.",
-                "url": "=http://sentinel-agent:8000/drafts/{draft_id}/summary",
-                "placeholderDefinitions": {
-                    "values": [
-                        {
-                            "name": "draft_id",
-                            "description": "The draft id, e.g. drf_01J...",
-                            "type": "string"
-                        }
-                    ]
+                "description": "Get the small summary of a draft: name, status, panel count, validation findings. Safe to call any time. Does NOT return the artifact itself.\n\nCall this tool with a single argument: a JSON-encoded object (as plain text, not wrapped in markdown fences) with exactly these fields:\n- \"draft_id\" (string): The draft id, e.g. drf_01J...\nOmit nothing — pass an empty string \"\" or empty array [] for anything not applicable. Respond with ONLY that JSON object as your input, no surrounding commentary.",
+                "workflowId": {
+                    "__rl": true,
+                    "value": "sentinel-tool-describe-draft",
+                    "mode": "id"
+                },
+                "workflowInputs": {
+                    "mappingMode": "defineBelow",
+                    "value": {},
+                    "matchingColumns": [],
+                    "schema": [],
+                    "attemptToConvertTypes": false,
+                    "convertFieldsToString": false
                 }
             },
             "id": "orch-tool-describe",
             "name": "describe_draft",
-            "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
-            "typeVersion": 1.1,
+            "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+            "typeVersion": 2.2,
             "position": [
                 480,
                 240
@@ -479,22 +271,25 @@
         },
         {
             "parameters": {
-                "toolDescription": "List recent drafts for this chat session, with their kind and status. Use when the analyst refers to something they generated earlier and you do not have the draft_id.",
-                "url": "=http://sentinel-agent:8000/drafts?session_id={session_id}",
-                "placeholderDefinitions": {
-                    "values": [
-                        {
-                            "name": "session_id",
-                            "description": "The current chat sessionId",
-                            "type": "string"
-                        }
-                    ]
+                "description": "List recent drafts for this chat session, with their kind and status. Use when the analyst refers to something they generated earlier and you do not have the draft_id.\n\nCall this tool with a single argument: a JSON-encoded object (as plain text, not wrapped in markdown fences) with exactly these fields:\n- \"session_id\" (string): The current chat sessionId\nOmit nothing — pass an empty string \"\" or empty array [] for anything not applicable. Respond with ONLY that JSON object as your input, no surrounding commentary.",
+                "workflowId": {
+                    "__rl": true,
+                    "value": "sentinel-tool-list-drafts",
+                    "mode": "id"
+                },
+                "workflowInputs": {
+                    "mappingMode": "defineBelow",
+                    "value": {},
+                    "matchingColumns": [],
+                    "schema": [],
+                    "attemptToConvertTypes": false,
+                    "convertFieldsToString": false
                 }
             },
             "id": "orch-tool-list",
             "name": "list_drafts",
-            "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
-            "typeVersion": 1.1,
+            "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+            "typeVersion": 2.2,
             "position": [
                 640,
                 240
@@ -502,36 +297,25 @@
         },
         {
             "parameters": {
-                "toolDescription": "Revise an EXISTING draft (parser, analytic rule, or TDD) based on the analyst's feedback — e.g. 'make severity High', 'add a panel for X'. Pass the draft_id and the feedback in plain language; the generator re-runs with the current artifact as context and updates the SAME draft in place. Returns the same shape as the matching generate_* tool. Not yet supported for workbook drafts — regenerate those with adjusted inputs instead.",
-                "method": "POST",
-                "url": "=http://sentinel-agent:8000/revise/{draft_id}",
-                "sendBody": true,
-                "specifyBody": "json",
-                "jsonBody": "{\n  \"feedback\": \"{feedback}\",\n  \"session_id\": \"{session_id}\"\n}",
-                "placeholderDefinitions": {
-                    "values": [
-                        {
-                            "name": "draft_id",
-                            "description": "The draft id to revise, e.g. drf_01J...",
-                            "type": "string"
-                        },
-                        {
-                            "name": "feedback",
-                            "description": "The analyst's requested change, in plain language",
-                            "type": "string"
-                        },
-                        {
-                            "name": "session_id",
-                            "description": "The current chat sessionId",
-                            "type": "string"
-                        }
-                    ]
+                "description": "Revise an EXISTING draft (parser, analytic rule, or TDD) based on the analyst's feedback — e.g. 'make severity High', 'add a panel for X'. Pass the draft_id and the feedback in plain language; the generator re-runs with the current artifact as context and updates the SAME draft in place. Returns the same shape as the matching generate_* tool. Not yet supported for workbook drafts — regenerate those with adjusted inputs instead.\n\nCall this tool with a single argument: a JSON-encoded object (as plain text, not wrapped in markdown fences) with exactly these fields:\n- \"draft_id\" (string): The draft id to revise, e.g. drf_01J...\n- \"feedback\" (string): The analyst's requested change, in plain language\n- \"session_id\" (string): The current chat sessionId\nOmit nothing — pass an empty string \"\" or empty array [] for anything not applicable. Respond with ONLY that JSON object as your input, no surrounding commentary.",
+                "workflowId": {
+                    "__rl": true,
+                    "value": "sentinel-tool-revise-draft",
+                    "mode": "id"
+                },
+                "workflowInputs": {
+                    "mappingMode": "defineBelow",
+                    "value": {},
+                    "matchingColumns": [],
+                    "schema": [],
+                    "attemptToConvertTypes": false,
+                    "convertFieldsToString": false
                 }
             },
             "id": "orch-tool-revise",
             "name": "revise_draft",
-            "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
-            "typeVersion": 1.1,
+            "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+            "typeVersion": 2.2,
             "position": [
                 960,
                 240
@@ -539,7 +323,7 @@
         },
         {
             "parameters": {
-                "description": "Deploy a validated draft to Microsoft Sentinel. This writes to the live workspace: it checks whether the resource already exists (create vs update), then PUTs the draft's artifact. ONLY call this after the analyst has explicitly confirmed. There is no rollback — a bad deploy is corrected by fixing the draft and deploying again.",
+                "description": "Deploy a validated draft to Microsoft Sentinel. This writes to the live workspace: it checks whether the resource already exists (create vs update), then PUTs the draft's artifact. ONLY call this after the analyst has explicitly confirmed. There is no rollback — a bad deploy is corrected by fixing the draft and deploying again.\n\nCall this tool with a single argument: a JSON-encoded object (as plain text, not wrapped in markdown fences) with exactly these fields:\n- \"draft_id\" (string): The draft id to deploy, e.g. drf_01J...\n- \"session_id\" (string): The current chat sessionId\nOmit nothing — pass an empty string \"\" or empty array [] for anything not applicable. Respond with ONLY that JSON object as your input, no surrounding commentary.",
                 "workflowId": {
                     "__rl": true,
                     "value": "sentinel-deploy",
@@ -547,10 +331,7 @@
                 },
                 "workflowInputs": {
                     "mappingMode": "defineBelow",
-                    "value": {
-                        "draft_id": "={{ $fromAI('draft_id', 'The draft id to deploy, e.g. drf_01J...', 'string') }}",
-                        "session_id": "={{ $fromAI('session_id', 'The current chat sessionId', 'string') }}"
-                    },
+                    "value": {},
                     "matchingColumns": [],
                     "schema": [],
                     "attemptToConvertTypes": false,
