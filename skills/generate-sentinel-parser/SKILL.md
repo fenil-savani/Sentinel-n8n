@@ -1,5 +1,5 @@
 ---
-name: Generate Sentinel Parser
+name: generate-sentinel-parser
 description: Generate a Microsoft Sentinel KQL parser (Kusto function YAML) from sample data, schema, OpenAPI spec, or Postman collection — following Sentinel parser best practices.
 ---
 

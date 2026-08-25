@@ -1,5 +1,5 @@
 ---
-name: Generate Microsoft Sentinel Workbook
+name: generate-sentinel-workbook
 description: Generate a Microsoft Sentinel workbook JSON from a parser and optional reference dashboard (LogScale YAML, Splunk XML, screenshot, or spec) — following Sentinel workbook best practices. Also supports migrating an existing third-party dashboard (Splunk, Falcon, Elastic, etc.) to Sentinel.
 ---
 

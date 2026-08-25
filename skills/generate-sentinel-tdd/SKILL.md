@@ -1,158 +1,96 @@
 ---
-name: Generate Sentinel TDD
-description: Generate a customer-ready Technical Design Document (TDD) for a new Microsoft Sentinel integration, in the team's house markdown format — Overview, Compatibility Matrix, Prerequisites, System Architecture, Integration use cases, Technical Implementation Details, MS Sentinel Limitation, References.
+name: generate-sentinel-tdd
+description: Generate a customer-ready Technical Design Document (TDD) for a new app/integration
+  (Microsoft Sentinel solutions and similar), following the team's house format — Version Control,
+  Overview, Compatibility Matrix, Prerequisites, System Architecture (with .drawio diagrams),
+  Integration use cases, Technical Implementation Details (Data Connector, Parsers, Analytic Rules,
+  Workbooks, Playbooks), MS Sentinel Limitation, References. Authors the markdown at the right depth,
+  generates draw.io architecture diagrams, and converts straight to a .docx ready to deliver. Use when
+  the user wants to write, draft, or scaffold a TDD / technical design document for any integration.
 ---
 
-# Generate a Microsoft Sentinel TDD
+# tdd-generator
 
-You are generating a **Technical Design Document** for a new Microsoft Sentinel integration. The
-output is markdown only — no `.docx` conversion, no architecture diagrams are rendered by you. The
-goal depth is "required minimum detail": concrete enough that an engineer could implement from it and
-a customer could review it, but not a line-by-line spec.
+Produce a **customer-ready Technical Design Document** for a new integration, then render it to `.docx`
+with embedded architecture diagrams. The output matches the team's established TDD house style (learned
+from Cyjax, Censys, Vectra, Google SecOps, and GTI TDDs).
 
----
+The goal depth is **"required minimum detail"** — concrete enough that an engineer can implement from it
+and a customer can review it, but not a line-by-line spec. See `reference/tdd-format.md` for the exact
+per-section depth contract; follow it closely.
 
-## Step 1 — Collect input from the user
+## Workflow
 
-Ask for whichever of these the analyst hasn't already given:
+### 1. Gather inputs (ask only for what's missing)
+Collect the essentials before writing. If the user already gave them, don't re-ask. Minimum set:
+- **Vendor / product name** and a one-line description of what it does.
+- **Integration purpose** — what data flows into Sentinel and why (e.g. "ingest GTI alerts and raise incidents").
+- **Components in scope** — which of: Data Connector, Parser(s), Analytic Rule(s), Workbook(s), Playbook(s).
+  (Not every TDD has all five — only document what exists.)
+- **Ingestion mechanism** — Azure Function (Python) timer-pull, Codeless Connector (CCF), or other.
+- **Key API details** if known — base URL, auth type (API key / OAuth2 / service account), main endpoint(s).
+  If unknown, leave clearly-marked `<TBD>` placeholders rather than inventing specifics.
 
-1. **Vendor / product name** and a one-line description of what it does (required).
-2. **Integration purpose** — what data flows into Sentinel and why (required).
-3. **Components in scope** — which of: Data Connector, Parser(s), Analytic Rule(s), Workbook(s),
-   Playbook(s). Not every TDD has all five — only document what exists (required).
-4. **Ingestion mechanism** — Azure Function (Python) timer-pull, Codeless Connector (CCF), or other.
-5. **Key API details**, if known — base URL, auth type, main endpoint(s). If unknown, use `<TBD>`
-   rather than guessing.
+If the user points you at source material (an API guide, a connector folder, a Jira epic), read it first
+and pull the real endpoint/auth/field details from there instead of asking.
 
-If the analyst points at source material (an API guide, a connector folder, sample data), prefer real
-detail pulled from that over asking piecemeal — but never invent an endpoint, field, or limit that
-wasn't actually given to you.
+### 2. Author the markdown
+Write `<Vendor>_<Product>_TDD.md` following `templates/tdd-skeleton.md` and the depth rules in
+`reference/tdd-format.md`. Key rules:
+- Professional, third-person, present tense. Customer-deliverable tone — no "we will probably".
+- Each component appears **twice**: a short *Integration use cases* entry (1 paragraph + **Acceptance Criteria**)
+  and a detailed *Technical Implementation Details* entry.
+- Use **tables** for: Version Control, endpoint property/request/response, query parameters, response codes,
+  User Inputs (ARM params), parser field mapping, playbook endpoints, enrichment field maps.
+- Never fabricate API contracts, schemas, or limits. Use `<TBD>` (or `<Internal Discussion>`) for unknowns —
+  the reference docs do this routinely.
+- Keep the two architecture headings exactly named so diagrams auto-place:
+  **`Overall System Architecture`** and **`Data Connector Architecture`**.
 
-## Step 2 — Validate scope completeness
+### 3. Generate the architecture diagrams (draw.io)
+Copy the two templates and customize the labels for this integration:
+- `templates/overall-architecture.drawio` → `<Vendor>_Overall_Architecture.drawio`
+- `templates/data-connector-architecture.drawio` → `<Vendor>_DataConnector_Architecture.drawio`
 
-Before writing, confirm you know: what data source is being integrated, why, which components are in
-scope, and the ingestion mechanism. If any of those four are missing, **stop and ask** rather than
-guessing — a wrong guess in a customer-facing document is worse than an honest `<TBD>`.
+Replace the `{{VENDOR}}`, `{{PRODUCT}}`, `{{TABLE}}` and similar placeholders with real names. Keep the
+mxGraphModel XML valid (don't break tags). Add/remove boxes to match the real data flow. If a component
+(e.g. Playbook) isn't in scope, drop its box.
 
-## Step 3 — Write the markdown following this skeleton exactly
+### 4. Convert to .docx with diagrams embedded
+Run the bundled converter. It renders each `.drawio` to PNG (via the diagrams.net export server) and
+auto-places it right after the matching heading.
 
-Fill every `<PLACEHOLDER>`. Delete whole sections for components not in scope (e.g. no Workbook H2 if
-no workbook is in scope). Keep the two architecture headings named **exactly**
-`Overall System Architecture` and `Data Connector Architecture` even though no diagram is rendered —
-downstream tooling anchors on those names.
-
-```markdown
-<Vendor> <Product> Microsoft Sentinel Integration
-
-v1.0.0
-
-# Version Control
-
-| # | Document Version | Date | Owner | Document Status | Comments |
-|---|------------------|------|-------|-----------------|----------|
-| 1 | 1.0.0 | <Month Dayth, Year> | Crest Data | Initial Draft |  |
-
-# Overview
-
-## Microsoft Sentinel Platform
-
-Microsoft Sentinel is a scalable, cloud-native, security information and event management (SIEM) and
-security orchestration, automation, and response (SOAR) solution.
-
-## <Vendor> Platform
-
-<2-4 sentences: what the vendor product is and the value it provides.>
-
-## <Vendor> Microsoft Sentinel Integration
-
-<2-4 sentences: how the integration is implemented, what data it retrieves, and the outcome in Sentinel.>
-
-# Compatibility Matrix
-
-Python Version : 3.12
-<Vendor> API Version : <version, or <TBD>>
-
-# Prerequisites
-
-Azure Account subscription (with the below services enabled / proper rights):
-- Azure Subscription with owner role, to register an application in Microsoft Entra ID and assign the contributor role.
-- Function App
-- Storage Account
-- Log Analytics Workspace
-- Microsoft Sentinel
-
-REST API Credentials/Permissions:
-- <Vendor> API credentials are required.
-
-# System Architecture
-
-<Integration> consists of the following components:
-- <list only the components actually in scope>
-
-## Overall System Architecture
-
-<one paragraph describing the end-to-end flow; no diagram is generated here>
-
-## Data Connector Architecture
-
-<one paragraph describing the connector's internal flow; only if a Data Connector is in scope>
-
-# Integration use cases
-
-## Data Connector
-
-<1-2 sentences: what it ingests and how.>
-
-## Parsers
-
-<1 sentence: what the parser(s) normalize.>
-
-Acceptance Criteria:
-- The parser must accurately parse the data without any errors.
-
-<!-- Analytic Rule / Workbook / Playbook H2 entries here ONLY if in scope, each with Acceptance Criteria. -->
-
-# Technical Implementation Details
-
-## Data Connector
-
-<mechanism-specific detail: for Azure Function, cover authentication flow, data fetching/filtering,
-ingestion to Sentinel, checkpoint mechanism, retry handling, and a table of the real endpoint(s) used
-(Property/Value: Endpoint, Method, Content-Type) plus any query parameters and response codes actually
-known. For CCF, cover the connector definition's auth type, pagination, and table/DCR shape. Use
-`<TBD>` for anything not supplied — never invent a specific endpoint path, parameter, or response code.>
-
-## Parser
-
-<2-4 sentences per parser: what raw data it processes and how it normalizes it.>
-
-<!-- Analytic Rules / Workbook / Playbook technical detail here ONLY if in scope. Playbooks: never
-     fabricate a third-party API request/response shape — use <TBD> if the real spec wasn't supplied. -->
-
-# MS Sentinel Limitation
-
-- <any platform limitation relevant to this integration, or omit the section if none apply>
-
-# References
-
-- Azure Sentinel Solutions GitHub
-- Microsoft Sentinel Normalization Parsers
-- Azure Monitor Log Ingestion API
-- <Vendor> API Reference
+```powershell
+$py = "C:\Users\devendra.chavda\Desktop\Sentinel-work\Automation\sentinel-pr-review\.venv\Scripts\python.exe"
+$skill = "C:\Users\devendra.chavda\.claude\skills\tdd-generator"
+& $py "$skill\scripts\md_to_docx.py" "<Vendor>_<Product>_TDD.md" `
+  -o "<Vendor>_<Product>_TDD.docx" `
+  --title "<Vendor> Microsoft Sentinel Integration - Technical Design Document" `
+  --toc `
+  --diagram "<Vendor>_Overall_Architecture.drawio::Overall System Architecture" `
+  --diagram "<Vendor>_DataConnector_Architecture.drawio::Data Connector Architecture"
 ```
 
-### Rules
+Formatting is fixed to the team house style automatically: **Arial** everywhere, **black headings**
+sized per level (Title 26 / H1 20 / H2 16 / H3 14 (#434343) / H4 12 (#666666) pt), tables with a
+gray `#BFBFBF` header row and thin black borders. Flags:
+- `--toc` inserts a Word Table of Contents field (open in Word → right-click → *Update Field* to fill it).
+- `--logo <path>` places a logo image centered at the top, above the title.
 
-- Professional, third-person, present tense. Customer-deliverable tone — no "we will probably".
-- Use tables for: Version Control, endpoint property/request/response, query parameters, response
-  codes, User Inputs.
-- **Never fabricate** API contracts, schemas, limits, or third-party response shapes. Use `<TBD>` for
-  anything not actually supplied — this is more important than sounding complete.
-- Only include a component's use-case and technical-detail sections if it's actually in scope; don't
-  pad the document with sections for things that don't exist.
+The converter needs `python-docx` + `requests`. The Sentinel project `.venv` above already has both.
+Any Python with those two packages works (`pip install python-docx requests`).
 
-## Step 4 — Hand off
+> **Privacy note:** `--diagram` uploads the diagram XML to `convert.diagrams.net` (third-party) to render
+> the PNG. For sensitive architecture, either omit `--diagram` (text-only docx) or export the PNGs manually
+> from app.diagrams.net and embed those instead. Mention this to the user when diagrams contain sensitive detail.
 
-Tell the analyst which sections are `<TBD>` and what input would resolve them. There is no deploy step
-for a TDD — once it's approved, work moves on to the Data Connector, Parser, Analytic Rule, Workbook,
-and Playbook generators for the components actually in scope.
+### 5. Verify and hand off
+Confirm the docx: report paragraph / table / image counts (the script prints the size). Tell the user the
+output path, which sections are `<TBD>`, and what still needs their input.
+
+## Files
+- `reference/tdd-format.md` — section-by-section structure + depth contract + house phrasing. **Read this before writing.**
+- `templates/tdd-skeleton.md` — fill-in markdown skeleton in the exact section order.
+- `templates/overall-architecture.drawio` — Overall System Architecture diagram template.
+- `templates/data-connector-architecture.drawio` — Data Connector internals diagram template.
+- `scripts/md_to_docx.py` — markdown→docx converter with .drawio rendering + heading-anchored image placement.

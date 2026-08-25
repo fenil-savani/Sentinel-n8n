@@ -1,5 +1,5 @@
 ---
-name: Generate Sentinel Analytic Rule
+name: generate-sentinel-analytic-rule
 description: Generate a Microsoft Sentinel scheduled analytic (detection) rule — YAML with a MITRE-mapped KQL query, trigger logic, and entity mappings — from a plain-language detection scenario.
 ---
 
