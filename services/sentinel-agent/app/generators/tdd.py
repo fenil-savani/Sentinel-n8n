@@ -1,13 +1,20 @@
 """TDD generation — drives `generate-sentinel-tdd.md`.
 
-Markdown only: no `.docx` conversion and no diagram rendering, since both
-need a bundled script / a third-party render call that don't fit this
-stateless sidecar. The analyst reads the `.md` directly from the shared
-output folder.
+The model only authors and submits the markdown; everything after validation
+is deterministic (the tool-calling agent has no shell access to run the
+skill's own converter itself). Once a draft's markdown is validated, this
+module writes it to `<draft_id>.md` — named for the draft's own Postgres id,
+so the filename is stable and traceable back to `drafts.id` regardless of
+how the vendor/product get renamed on revision — then renders the two
+`.drawio` architecture diagrams and a `.docx` via `tdd_docx.build_docx`
+(the bundled `generate-sentinel-tdd` skill kit). The `.docx` step is
+best-effort: a failure there doesn't fail the draft, since the markdown is
+already validated and written by that point.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +26,7 @@ from ..prompts import tdd_system
 from ..store import Store
 from ..tools import Toolbox
 from ._shared import handle_pause_or_failure, revision_prompt
+from .tdd_docx import build_docx
 
 log = logging.getLogger(__name__)
 
@@ -104,7 +112,7 @@ async def generate_tdd(
     return await _finish(
         draft_id, result=result, components=request.components,
         solution=request.solution or request.vendor, settings=settings, store=store,
-        fallback_name=name,
+        fallback_name=name, vendor=request.vendor, product=request.product,
     )
 
 
@@ -145,6 +153,7 @@ async def revise_tdd(
         draft_id, result=result, components=summary.get("components") or [],
         solution=summary.get("solution") or draft["name"], settings=settings, store=store,
         fallback_name=draft["name"],
+        vendor=summary.get("vendor", ""), product=summary.get("product", ""),
     )
 
 
@@ -157,6 +166,8 @@ async def _finish(
     settings: Settings,
     store: Store,
     fallback_name: str,
+    vendor: str,
+    product: str,
 ) -> dict[str, Any]:
     paused = handle_pause_or_failure(draft_id, result, "submit_tdd")
     if paused is not None:
@@ -179,6 +190,8 @@ async def _finish(
 
     summary = {
         "name": name,
+        "vendor": vendor,
+        "product": product,
         "components": components,
         "solution": solution,
         "sections": markdown.count("\n# "),
@@ -188,14 +201,27 @@ async def _finish(
     }
 
     if status == "validated":
+        # Filename is the draft's own Postgres id, not the vendor/product —
+        # stable across revisions and unambiguous even if two drafts share a
+        # vendor/product name.
         try:
             summary["file"] = write_artifact(
                 settings.output_dir, solution=solution,
-                kind="tdd", name=name, content=markdown,
+                kind="tdd", name=draft_id, content=markdown,
             )
         except OSError as exc:
             log.warning("tdd draft %s: could not write output file: %s", draft_id, exc)
             summary["file_error"] = str(exc)
+
+        docx_summary = await asyncio.to_thread(
+            build_docx,
+            settings=settings, solution=solution, draft_id=draft_id,
+            vendor=vendor, product=product, components=components,
+            markdown=markdown,
+            title=f"{vendor} {product} Microsoft Sentinel Integration - "
+                  "Technical Design Document",
+        )
+        summary.update(docx_summary)
 
     await store.update_draft(
         draft_id, status=status, name=name, artifact=markdown,

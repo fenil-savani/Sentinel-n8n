@@ -173,7 +173,7 @@ async def handle(body: dict[str, Any], settings: Any) -> dict[str, Any]:
     messages = body.get("messages") or []
     tools = body.get("tools") or []
 
-    envelope, tool_trace = await cli_exec.run_claude_once(
+    envelope, tool_trace, thinking = await cli_exec.run_claude_once(
         bin_path=settings.claude_cli_bin,
         oauth_token=settings.claude_code_oauth_token,
         timeout=settings.claude_cli_timeout,
@@ -201,12 +201,20 @@ async def handle(body: dict[str, Any], settings: Any) -> dict[str, Any]:
         "total_tokens": prompt_tokens + completion_tokens,
     }
 
+    if thinking:
+        log.debug(
+            "openai_compat thinking captured | session=%s chars=%d",
+            envelope.get("session_id"), len(thinking),
+        )
     log.info(
-        "openai_compat OK | session=%s turns=%s cost=$%.4f tool=%s native_tools=%s",
+        "openai_compat OK | session=%s turns=%s cost=$%.4f in=%d out=%d cache_read=%d "
+        "tool=%s native_tools=%s thinking=%dchars",
         envelope.get("session_id"), envelope.get("num_turns", 0),
         envelope.get("total_cost_usd", 0.0),
+        usage_raw.get("input_tokens", 0), usage_raw.get("output_tokens", 0),
+        usage_raw.get("cache_read_input_tokens", 0),
         payload.get("tool") if isinstance(payload, dict) else None,
-        tool_trace,
+        tool_trace, len(thinking),
     )
 
     return to_openai_response(payload=payload, text=text, model=settings.orchestrator_model, usage=usage)

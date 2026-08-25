@@ -15,9 +15,11 @@ class Settings(BaseSettings):
     # One model setting per flow, sized to that flow's task complexity —
     # deliberately not a single shared `llm_model`, so a flow can be tuned
     # (or swapped to a cheaper/stronger model) without affecting the others.
-    llm_model_parser: str = "claude-opus-5"              # parser generation: reasoning-heavy
-    llm_model_workbook_manifest: str = "claude-opus-5"   # panel planning: reasoning-heavy
-    llm_model_panel: str = "claude-sonnet-5"             # per-panel loop: high-volume, cheaper
+    # All four default to Haiku 4.5; raise the reasoning-heavy ones back to
+    # Sonnet/Opus per-flow via .env if generation quality needs it.
+    llm_model_parser: str = "claude-haiku-4-5-20251001"              # parser generation: reasoning-heavy
+    llm_model_workbook_manifest: str = "claude-haiku-4-5-20251001"   # panel planning: reasoning-heavy
+    llm_model_panel: str = "claude-haiku-4-5-20251001"               # per-panel loop: high-volume, cheaper
 
     # "anthropic": Anthropic API, billed against anthropic_api_key.
     # "claude_cli": shells out to a local `claude` binary using a Claude Code
@@ -39,7 +41,7 @@ class Settings(BaseSettings):
     # a meaningless placeholder from that node's perspective — so it's
     # ignored in favor of this setting. Independent of claude_cli_* above:
     # this endpoint always uses the CLI, regardless of llm_provider.
-    orchestrator_model: str = "claude-opus-5"
+    orchestrator_model: str = "claude-haiku-4-5-20251001"
 
     # ── Azure: management plane ──────────────────────────────────────────
     azure_tenant_id: str = ""
@@ -69,6 +71,10 @@ class Settings(BaseSettings):
     prompts_dir: Path = Path("/prompts")
     reference_dir: Path = Path("/reference")
     output_dir: Path = Path("/output")
+    # The generate-sentinel-tdd skill's scripts/ and templates/, mounted
+    # read-only — the .docx converter and the two .drawio diagram templates
+    # used to render a validated TDD draft. See app/generators/tdd_docx.py.
+    tdd_kit_dir: Path = Path("/tdd_kit")
 
     log_level: str = "INFO"
 

@@ -34,6 +34,7 @@ services:
       PROMPTS_DIR: /prompts
       REFERENCE_DIR: /reference
       OUTPUT_DIR: /output
+      TDD_KIT_DIR: /tdd_kit
     volumes:
       # The two skill files are the single source of truth for humans and for
       # the sidecar. Mounted read-only, read at request time — edit them and the
@@ -42,6 +43,12 @@ services:
       - ./skills/generate-sentinel-workbook/SKILL.md:/prompts/generate-sentinel-workbook.md:ro
       - ./skills/generate-sentinel-analytic-rule/SKILL.md:/prompts/generate-sentinel-analytic-rule.md:ro
       - ./skills/generate-sentinel-tdd/SKILL.md:/prompts/generate-sentinel-tdd.md:ro
+      # The same skill's scripts/ (md_to_docx.py) and templates/ (.drawio
+      # diagrams) — driven deterministically by app/generators/tdd_docx.py
+      # once a TDD draft's markdown validates, since the tool-calling agent
+      # has no shell access to run the converter itself.
+      - ./skills/generate-sentinel-tdd/scripts:/tdd_kit/scripts:ro
+      - ./skills/generate-sentinel-tdd/templates:/tdd_kit/templates:ro
       - ./data:/reference:ro
       # Where generated artifacts land for the analyst to read directly —
       # laid out like a real Azure-Sentinel solution repo. Read-write,

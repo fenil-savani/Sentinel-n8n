@@ -43,15 +43,7 @@ def _sanitize(segment: str) -> str:
     return cleaned or "unnamed"
 
 
-def write_artifact(output_dir: Path, *, solution: str, kind: str, name: str, content: str) -> str:
-    """Write one artifact file under ``{output_dir}/{solution}/...``.
-
-    Returns the path as it appears on the *host* side of the docker-compose
-    mount (``output/...``) — that's what's actually useful to hand back to
-    the analyst, not the in-container ``/output/...`` path.
-    """
-    template = _KIND_LAYOUT.get(kind, "{kind}/{name}.txt")
-    rel = template.format(name=_sanitize(name), kind=_sanitize(kind))
+def _resolve_target(output_dir: Path, solution: str, rel: str) -> tuple[Path, str]:
     solution_dir = _sanitize(solution)
 
     root = output_dir.resolve()
@@ -63,6 +55,38 @@ def write_artifact(output_dir: Path, *, solution: str, kind: str, name: str, con
         raise ValueError(f"refusing to write outside the output directory: {target}")
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    return target, str(Path("output") / solution_dir / rel)
 
-    return str(Path("output") / solution_dir / rel)
+
+def write_artifact(output_dir: Path, *, solution: str, kind: str, name: str, content: str) -> str:
+    """Write one artifact file under ``{output_dir}/{solution}/...``.
+
+    Returns the path as it appears on the *host* side of the docker-compose
+    mount (``output/...``) — that's what's actually useful to hand back to
+    the analyst, not the in-container ``/output/...`` path.
+    """
+    template = _KIND_LAYOUT.get(kind, "{kind}/{name}.txt")
+    rel = template.format(name=_sanitize(name), kind=_sanitize(kind))
+    target, host_path = _resolve_target(output_dir, solution, rel)
+    target.write_text(content, encoding="utf-8")
+    return host_path
+
+
+def write_binary_artifact(
+    output_dir: Path, *, solution: str, rel_name: str, content: bytes
+) -> tuple[Path, str]:
+    """Write raw bytes under ``{output_dir}/{solution}/{rel_name}``.
+
+    For files that don't fit the text-based ``_KIND_LAYOUT`` convention above
+    (a rendered ``.docx``, a ``.drawio`` diagram) but still need to land next
+    to their sibling artifact in the same sandboxed solution folder.
+    ``rel_name`` is a filename already-sanitized by the caller (e.g. built
+    from a draft id), not a free-form kind/name pair.
+
+    Returns ``(disk_path, host_path)`` — the real path for a caller that
+    needs to read the file back (e.g. to render it), and the host-side
+    display path (``output/...``), same convention as `write_artifact`.
+    """
+    target, host_path = _resolve_target(output_dir, solution, _sanitize(rel_name))
+    target.write_bytes(content)
+    return target, host_path

@@ -135,7 +135,7 @@ class ClaudeCliRuntime(AgentRuntime):
         by_name = self._index(tools)
         schema = self._output_schema([t for t in tools if t.terminal])
 
-        envelope, tool_trace = await cli_exec.run_claude_once(
+        envelope, tool_trace, thinking = await cli_exec.run_claude_once(
             bin_path=self._bin_path,
             oauth_token=self._oauth_token,
             timeout=self._timeout,
@@ -175,10 +175,18 @@ class ClaudeCliRuntime(AgentRuntime):
             terminal_tool = None
             payload = None
 
+        usage = envelope.get("usage") or {}
+        if thinking:
+            log.debug(
+                "claude cli thinking captured | session=%s chars=%d",
+                envelope.get("session_id"), len(thinking),
+            )
         log.info(
-            "claude cli OK | session=%s turns=%s cost=$%.4f",
+            "claude cli OK | session=%s turns=%s cost=$%.4f in=%d out=%d cache_read=%d thinking=%dchars",
             envelope.get("session_id"), envelope.get("num_turns", 0),
             envelope.get("total_cost_usd", 0.0),
+            usage.get("input_tokens", 0), usage.get("output_tokens", 0),
+            usage.get("cache_read_input_tokens", 0), len(thinking),
         )
 
         return RunResult(

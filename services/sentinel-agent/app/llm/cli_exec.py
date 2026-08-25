@@ -84,9 +84,18 @@ def build_command(
     return cmd
 
 
-def parse_stream(stdout: str) -> tuple[dict[str, Any], list[str]]:
+def parse_stream(stdout: str) -> tuple[dict[str, Any], list[str], str]:
+    """Parse --output-format stream-json NDJSON output into the final result
+    envelope, an ordered tool-name trace, and any extended-thinking text.
+
+    Thinking can arrive two ways depending on CLI version/flags: as a whole
+    "thinking" content block on an "assistant" message, or streamed
+    incrementally as "stream_event" -> content_block_delta ->
+    "thinking_delta" chunks. Both are collected so callers get the full text
+    either way."""
     envelope: dict[str, Any] = {}
     tool_trace: list[str] = []
+    thinking_parts: list[str] = []
     for raw_line in stdout.splitlines():
         line = raw_line.strip()
         if not line:
@@ -98,15 +107,28 @@ def parse_stream(stdout: str) -> tuple[dict[str, Any], list[str]]:
         outer_type = outer.get("type")
         if outer_type == "assistant":
             for block in (outer.get("message") or {}).get("content") or []:
-                if isinstance(block, dict) and block.get("type") == "tool_use":
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "tool_use":
                     name = block.get("name", "")
                     # StructuredOutput is the synthetic --json-schema
                     # submission tool, not a real tool call worth tracing.
                     if name and name != "StructuredOutput":
                         tool_trace.append(name)
+                elif btype == "thinking":
+                    chunk = block.get("thinking", "")
+                    if chunk:
+                        thinking_parts.append(chunk)
+        elif outer_type == "stream_event":
+            delta = ((outer.get("event") or {}).get("delta")) or {}
+            if delta.get("type") == "thinking_delta":
+                chunk = delta.get("thinking", "")
+                if chunk:
+                    thinking_parts.append(chunk)
         elif outer_type == "result":
             envelope = outer
-    return envelope, tool_trace
+    return envelope, tool_trace, "".join(thinking_parts)
 
 
 async def run_claude_once(
@@ -119,13 +141,16 @@ async def run_claude_once(
     model: str,
     schema: dict[str, Any],
     add_dir: str | None = None,
-) -> tuple[dict[str, Any], list[str]]:
+) -> tuple[dict[str, Any], list[str], str]:
     """One full `claude --print` invocation: resolve, build, execute, parse,
     and raise LLMUnavailable on any backend-level failure (auth, timeout,
-    rate limit, no output). Returns (envelope, tool_trace) on success —
-    callers interpret `envelope["structured_output"]`/`["result"]`
+    rate limit, no output). Returns (envelope, tool_trace, thinking) on
+    success — callers interpret `envelope["structured_output"]`/`["result"]`
     themselves, since what a "successful" response means differs between
-    the generation flow and the chat-model proxy."""
+    the generation flow and the chat-model proxy. `thinking` is the
+    concatenated extended-thinking text, or "" when the model produced none
+    or the CLI didn't stream it — purely for debug logging, no caller
+    branches on it."""
     resolved = resolve_bin(bin_path)
     cmd = build_command(bin_path=resolved, system=system, model=model, schema=schema, add_dir=add_dir)
 
@@ -163,7 +188,7 @@ async def run_claude_once(
             f"claude CLI produced no output (exit {proc.returncode}): {stderr[:400]}"
         )
 
-    envelope, tool_trace = parse_stream(stdout)
+    envelope, tool_trace, thinking = parse_stream(stdout)
     if not envelope:
         raise LLMUnavailable(
             f"claude CLI stream produced no result envelope "
@@ -185,4 +210,4 @@ async def run_claude_once(
     if envelope.get("subtype") == "error_max_turns":
         raise LLMUnavailable("claude CLI hit its internal turn limit without finishing")
 
-    return envelope, tool_trace
+    return envelope, tool_trace, thinking
