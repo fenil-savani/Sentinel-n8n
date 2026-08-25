@@ -1,10 +1,11 @@
 """Tests that need neither a model nor Azure.
 
 The most valuable assertions here are the ones anchored to artifacts whose
-correct form is already known: `data/corelight_conn.yaml` and
-`data/corelight_intel.yaml` are hand-built parsers, and
-`data/CorelightDataExplorer.yaml` is a shipped dashboard. Rules calibrated
-against real artifacts are worth more than rules calibrated against opinion.
+correct form is already known: `skills/generate-sentinel-parser/reference/corelight_conn.yaml`
+and `skills/generate-sentinel-parser/reference/corelight_intel.yaml` are hand-built parsers,
+and `skills/generate-sentinel-workbook/reference/CorelightDataExplorer.yaml` is a shipped
+dashboard. Rules calibrated against real artifacts are worth more than rules calibrated
+against opinion.
 
     pytest tests/ -v
 """

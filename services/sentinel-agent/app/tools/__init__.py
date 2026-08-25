@@ -130,6 +130,54 @@ class Toolbox:
             fn=_query,
         )
 
+    def _get_table_schema(self) -> Tool:
+        async def _schema(table: str) -> str:
+            if self._logs is None:
+                return (
+                    "SKIPPED: no Log Analytics credentials configured, so the schema "
+                    "could not be fetched. Ask the analyst for the field list or sample "
+                    "data instead."
+                )
+            result = await self._logs.query(f"{table} | getschema | project ColumnName, ColumnType")
+            if not result.ok:
+                if result.error_kind == "missing_table":
+                    return (
+                        f"ERROR (missing table): {result.error}\n"
+                        "The table name is wrong, or it hasn't been created yet. "
+                        "getschema does not need any rows to have been ingested, but the "
+                        "table object itself must exist (created via its DCR, or by a "
+                        "first legacy ingest for an HTTP Data Collector API table)."
+                    )
+                return f"ERROR ({result.error_kind}): {result.error}"
+            if not result.rows:
+                return f"OK: '{table}' exists but getschema returned no columns."
+            lines = [f"{r.get('ColumnName')}: {r.get('ColumnType')}" for r in result.rows]
+            return f"OK: {len(lines)} column(s) in '{table}':\n" + "\n".join(lines)
+
+        return Tool(
+            name="get_table_schema",
+            description=(
+                "Fetch the real column list and types for a table that already exists in "
+                "the configured Sentinel/Log Analytics workspace, via "
+                "'<table> | getschema'. Call this FIRST when the analyst names an "
+                "existing table instead of pasting sample data, a schema, or a spec — "
+                "it's ground truth and saves them from typing out a field list by hand. "
+                "Works even if the table has zero rows so far, as long as it's been "
+                "created."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "table": {
+                        "type": "string",
+                        "description": "Exact table name, e.g. 'Corelight_v2_conn_CL'.",
+                    }
+                },
+                "required": ["table"],
+            },
+            fn=_schema,
+        )
+
     def _request_input(self) -> Tool:
         return Tool(
             name="request_input",
@@ -186,6 +234,7 @@ class Toolbox:
             self._read_reference(),
             self._run_python(),
             self._run_kql(),
+            self._get_table_schema(),
             self._request_input(),
             submit,
         ]

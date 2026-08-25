@@ -70,7 +70,9 @@ _HARNESS_TOOL_NOTES: dict[str, str] = {
     ),
     "read_reference": (
         "- **Reference files** are read with `read_reference` using paths relative to the\n"
-        "  reference directory (so `corelight_conn.yaml`, not `data/corelight_conn.yaml`)."
+        "  reference directory, one subfolder per skill (e.g. `parser/corelight_conn.yaml`,\n"
+        "  `workbook/CorelightDataExplorer.yaml`) — call `list_reference_files` first if\n"
+        "  you're not sure of the exact path."
     ),
     "run_python": (
         "- **`run_python`** is available and preferred for schema derivation, counting,\n"
@@ -80,6 +82,12 @@ _HARNESS_TOOL_NOTES: dict[str, str] = {
         "- **`run_kql`** executes against the real workspace. Use it to check your query\n"
         "  before submitting; it catches syntax errors and proves the table and columns\n"
         "  exist."
+    ),
+    "get_table_schema": (
+        "- **`get_table_schema`** fetches the real column list and types straight from the\n"
+        "  configured Sentinel workspace. When the analyst names an existing table instead\n"
+        "  of pasting sample data or a schema, call this FIRST rather than asking them to\n"
+        "  type out fields you can just look up."
     ),
 }
 

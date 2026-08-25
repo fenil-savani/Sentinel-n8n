@@ -293,8 +293,8 @@ linking and Step 6's activation before assuming the workflow logic is wrong.
 
 Open the Chat panel on **Sentinel — Orchestrator** (or use your own portal
 against the webhook above), ask for the Corelight conn parser, and diff the
-result against `data/corelight_conn.yaml` — that diff is the real quality
-signal, not anything in this doc.
+result against `skills/generate-sentinel-parser/reference/corelight_conn.yaml`
+— that diff is the real quality signal, not anything in this doc.
 
 ### 9. Azure + deploy (when ready)
 
@@ -416,7 +416,8 @@ generating ──> validated ──> deployed
 The sharpest available quality signal for whichever model you run: regenerate
 `corelight_conn.yaml` via the chat or `/generate/parser`, then diff the
 `artifact` field of the resulting draft against the original file. Both
-`data/corelight_conn.yaml` and `data/corelight_intel.yaml` are hand-built
+`skills/generate-sentinel-parser/reference/corelight_conn.yaml` and
+`skills/generate-sentinel-parser/reference/corelight_intel.yaml` are hand-built
 parsers whose correct output is already known — the lint suite is calibrated
 against them passing clean.
 

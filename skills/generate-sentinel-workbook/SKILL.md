@@ -104,7 +104,7 @@ Every workbook *must follows this outer skeleton*:
 
 Wrap every panel inside ONE outer group (`type: 12`). Use inner `type: 12` sub-groups to organise sections (Overview, Distribution, Trends, Detail Tables). Don't put bare panels at the top level — keep them grouped.
 
-Read `data/CorelightDataExplorer.yaml` this example dashboard to understand how we create sentinel dashboard.
+Read `reference/CorelightDataExplorer.yaml` this example dashboard to understand how we create sentinel dashboard.
 
 ## Step 4 — Parameters block
 
@@ -268,4 +268,4 @@ Output:
 
 ## Reference dashboard
 
-- multi-tab pattern with `Tab` parameter and `conditionalVisibility` per group - `data/CorelightDataExplorer.yaml`
+- multi-tab pattern with `Tab` parameter and `conditionalVisibility` per group - `reference/CorelightDataExplorer.yaml`
