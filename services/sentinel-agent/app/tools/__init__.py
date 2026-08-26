@@ -200,7 +200,7 @@ class Toolbox:
                         "description": "One clear question to put to the analyst.",
                     },
                 },
-                "required": ["missing", "question"],
+                "required": ["question"],
             },
             terminal=True,
         )

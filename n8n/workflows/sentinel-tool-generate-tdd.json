@@ -27,7 +27,7 @@
         "url": "={{ 'http://sentinel-agent:8000/generate/tdd' }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify((typeof $json.query === 'string' ? JSON.parse($json.query) : $json.query)) }}",
+        "jsonBody": "={{ JSON.stringify((typeof $json.query === 'string' ? JSON.parse($json.query) : ($json.query ?? $json))) }}",
         "options": {}
       },
       "id": "call",

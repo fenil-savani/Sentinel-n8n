@@ -55,6 +55,18 @@ def _resolve_target(output_dir: Path, solution: str, rel: str) -> tuple[Path, st
         raise ValueError(f"refusing to write outside the output directory: {target}")
 
     target.parent.mkdir(parents=True, exist_ok=True)
+    # output/ is a bind mount the analyst manages with their own host tools,
+    # not container-internal state, and this process's uid (10001 in the
+    # container, mapped to some host uid the analyst doesn't share) has no
+    # group in common with the analyst's host user either — so the analyst
+    # needs the *other* bits, not just group ones. mkdir()'s default mode is
+    # reduced by umask, so set it explicitly on every directory this call
+    # creates, from the leaf up to (but not including) the mount root, which
+    # is owned by the host user and not ours to chmod.
+    for parent in (target.parent, *target.parent.parents):
+        if parent == root:
+            break
+        parent.chmod(0o777)
     return target, str(Path("output") / solution_dir / rel)
 
 
@@ -69,6 +81,7 @@ def write_artifact(output_dir: Path, *, solution: str, kind: str, name: str, con
     rel = template.format(name=_sanitize(name), kind=_sanitize(kind))
     target, host_path = _resolve_target(output_dir, solution, rel)
     target.write_text(content, encoding="utf-8")
+    target.chmod(0o666)
     return host_path
 
 
@@ -89,4 +102,5 @@ def write_binary_artifact(
     """
     target, host_path = _resolve_target(output_dir, solution, _sanitize(rel_name))
     target.write_bytes(content)
+    target.chmod(0o666)
     return target, host_path

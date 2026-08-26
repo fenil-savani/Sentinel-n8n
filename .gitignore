@@ -6,3 +6,9 @@
 # per-deployment output, not something to version alongside the tool itself.
 /output/*
 !/output/.gitkeep
+# Added by code-review-graph
+.code-review-graph/
+.claude/*
+.mcp.json
+CLAUDE.md
+.code-review-graphignore

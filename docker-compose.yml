@@ -96,6 +96,12 @@ services:
       EXECUTIONS_TIMEOUT_MAX: 7200
       N8N_DIAGNOSTICS_ENABLED: "false"
       N8N_RUNNERS_ENABLED: "true"
+      # Code nodes (the deploy workflow's "Build Azure Request") read the
+      # AZURE_* vars below via $env. With task runners enabled, n8n blocks
+      # $env access by default and throws "access to env vars denied" — so
+      # allow it explicitly. Secrets are NOT among these (they live in the
+      # n8n credential store), so exposing this set to the sandbox is safe.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
       # The deploy workflow derives a workbook's stable GUID with sha1, the
       # same way uuid5 does, so redeploys update in place instead of creating
       # a new resource each time.

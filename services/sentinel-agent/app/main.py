@@ -18,8 +18,9 @@ from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 import yaml
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .azure.logs import LogsClient
@@ -87,6 +88,20 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Sentinel Agent", version="0.1.0", lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    # FastAPI's default `detail` is a list of {loc, msg, ...} dicts. n8n's HTTP
+    # Request node only surfaces a body's `detail` as the error message when
+    # it's a plain string — for the list shape it falls back to a generic
+    # per-status-code message, which hides *why* the request was rejected
+    # from both the caller and the LLM tool caller that has to retry.
+    parts = []
+    for err in exc.errors():
+        loc = ".".join(str(p) for p in err["loc"] if p != "body")
+        parts.append(f"{loc}: {err['msg']}" if loc else err["msg"])
+    return JSONResponse(status_code=422, content={"detail": "; ".join(parts)})
 
 
 # ── request models ──────────────────────────────────────────────────────────

@@ -24,10 +24,10 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ 'http://sentinel-agent:8000/revise/' + (typeof $json.query === 'string' ? JSON.parse($json.query) : $json.query).draft_id }}",
+        "url": "={{ 'http://sentinel-agent:8000/revise/' + (typeof $json.query === 'string' ? JSON.parse($json.query) : ($json.query ?? $json)).draft_id }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify((typeof $json.query === 'string' ? JSON.parse($json.query) : $json.query)) }}",
+        "jsonBody": "={{ JSON.stringify((typeof $json.query === 'string' ? JSON.parse($json.query) : ($json.query ?? $json))) }}",
         "options": {}
       },
       "id": "call",
