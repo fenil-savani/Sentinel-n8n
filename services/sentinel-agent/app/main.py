@@ -445,7 +445,7 @@ async def list_drafts(session_id: str | None = None, limit: int = 20) -> dict[st
 
 class DeploymentBody(BaseModel):
     draft_id: str
-    resource_type: Literal["savedSearch", "workbook"]
+    resource_type: Literal["savedSearch", "workbook", "alertRule", "templateDeployment"]
     resource_id: str
     action: Literal["create", "update"]
     request_body: dict[str, Any] | None = None

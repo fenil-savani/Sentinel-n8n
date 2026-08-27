@@ -206,7 +206,13 @@ credential for this node — it will not be read.
 #### 5c. `Azure Management (client credentials)` — type **OAuth2 API**
 
 Only needed once you're ready to actually deploy. See
-[docs/azure-setup.md](docs/azure-setup.md) §4 for how to obtain the values.
+[docs/azure-setup.md](docs/azure-setup.md) §4 for how to obtain the values,
+and §4's note there for **why this has to be a UI credential and can't just
+be added to `.env`** — short version: `docker-compose.yml` never passes
+`AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET` into the `n8n` container on purpose;
+the secret lives only in n8n's own encrypted credential store. A missing or
+unlinked credential here fails before n8n opens a socket, which is why it
+surfaces in chat as `HTTP 0` rather than a real Azure error.
 
 1. Credentials → Add credential → search "OAuth2" → select **OAuth2 API**.
 2. Fill in:
@@ -219,6 +225,12 @@ Only needed once you're ready to actually deploy. See
    | Scope | `https://management.azure.com/.default` |
    | Authentication | Send as Body |
 3. Click **Save**.
+4. The service principal also needs a role on the resource group for
+   whichever resource kinds you'll deploy — Log Analytics Contributor
+   (parsers), Monitoring Contributor (workbooks), Microsoft Sentinel
+   Contributor (analytic rules). See
+   [docs/azure-setup.md](docs/azure-setup.md) §2 for the exact commands. A
+   missing role fails with a clean `403` naming the role, not `HTTP 0`.
 
 ### 6. Import and activate the workflows
 
