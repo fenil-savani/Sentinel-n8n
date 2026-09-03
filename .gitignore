@@ -6,6 +6,11 @@
 # per-deployment output, not something to version alongside the tool itself.
 /output/*
 !/output/.gitkeep
+
+# Reference-only Agentweave CCF project (agent prompts, skills, and real
+# vendor Solutions/) used as source material for the CCF connector generator
+# work — not this repo's own code.
+/microsoft-sentinel-ccf/
 # Added by code-review-graph
 .code-review-graph/
 .claude/*

@@ -425,3 +425,52 @@ class Toolbox:
             terminal=True,
         )
         return [self._run_kql(), submit]
+
+    def ccf_connector_tools(self) -> list[Tool]:
+        submit = Tool(
+            name="submit_ccf_connector",
+            description=(
+                "Submit the finished CCF v2 connector file set. Pass each file's COMPLETE "
+                "JSON content as its own string field — no markdown fences, no commentary. "
+                "Omit table_json entirely when the data maps to a Microsoft standard table "
+                "(no custom table needed). Call this exactly once, after verifying the "
+                "cross-file mapping chain yourself: ConnectorDefinition id = PollerConfig "
+                "connectorDefinitionName; PollerConfig dcrConfig.streamName = DCR "
+                "streamDeclarations key; DCR outputStream = 'Custom-' + Table name."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "connector_definition_json": {
+                        "type": "string",
+                        "description": "Complete _ConnectorDefinition.json content (a JSON object).",
+                    },
+                    "poller_config_json": {
+                        "type": "string",
+                        "description": "Complete _PollerConfig.json content (a JSON array).",
+                    },
+                    "dcr_json": {
+                        "type": "string",
+                        "description": "Complete _DCR.json content (a JSON array).",
+                    },
+                    "table_json": {
+                        "type": "string",
+                        "description": "Complete _Table.json content (a JSON array). Omit "
+                                       "if the data maps to a standard table.",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional caveats for the analyst.",
+                    },
+                },
+                "required": ["connector_definition_json", "poller_config_json", "dcr_json"],
+            },
+            terminal=True,
+        )
+        return [
+            self._list_reference(),
+            self._read_reference(),
+            self._run_python(),
+            self._request_input(),
+            submit,
+        ]

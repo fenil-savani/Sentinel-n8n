@@ -183,6 +183,21 @@ def tdd_system(prompts_dir: Path, tool_names: Iterable[str]) -> str:
     return f"{skill}\n{harness(tool_names)}\n{_TDD_STAGE}"
 
 
+_CCF_CONNECTOR_STAGE = """
+## This request
+
+Produce **one CCF v2 RestApiPoller connector file set** and submit it with
+`submit_ccf_connector`. Read the closest-matching reference example first (Step 1 above),
+verify the cross-file mapping chain yourself before submitting (Step 8), and remember: no
+`Table.json` is needed when the data maps to a standard table.
+"""
+
+
+def ccf_connector_system(prompts_dir: Path, tool_names: Iterable[str]) -> str:
+    skill = _load(Path(prompts_dir) / "generate-sentinel-ccf-connector.md")
+    return f"{skill}\n{harness(tool_names)}\n{_CCF_CONNECTOR_STAGE}"
+
+
 def workbook_manifest_system(prompts_dir: Path, tool_names: Iterable[str]) -> str:
     skill = _load(Path(prompts_dir) / "generate-sentinel-workbook.md")
     return f"{skill}\n{harness(tool_names)}\n{_MANIFEST_STAGE}"

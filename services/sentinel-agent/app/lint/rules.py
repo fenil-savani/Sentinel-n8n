@@ -422,6 +422,199 @@ def _check_panel(item: dict[str, Any], valid_parsers: set[str]) -> list[Finding]
     return findings
 
 
+# ── ccf connector ───────────────────────────────────────────────────────────
+# Deterministic port of the reviewer's 18 auto-fail conditions and the
+# cross-file mapping chain (see generate-sentinel-ccf-connector/SKILL.md
+# Step 8) — checked mechanically rather than by a second LLM pass, same
+# philosophy as every other lint_* in this file.
+
+_RESERVED_KQL_COLUMNS = {"type", "count", "title", "id", "status", "class", "level", "timestamp"}
+_RESERVED_OAUTH2_PARAMS = {
+    "grant_type", "client_id", "client_secret", "code", "redirect_uri", "scope", "apikey",
+}
+# Auth fields expected to hold a {{placeholder}} or ARM expression, never a literal secret.
+_SECRET_AUTH_FIELDS = ("ApiKey", "Password", "ClientSecret", "UserToken", "AuthorizationCode")
+
+
+def _looks_like_placeholder(value: Any) -> bool:
+    text = str(value)
+    return text.startswith("{{") or text.startswith("[") or text.startswith("{_")
+
+
+def lint_ccf_connector(
+    connector_definition: dict[str, Any],
+    poller_config: list[dict[str, Any]],
+    dcr: list[dict[str, Any]],
+    table: list[dict[str, Any]] | None,
+    raw: str,
+) -> tuple[bool, list[Finding]]:
+    findings: list[Finding] = []
+
+    cd_props = (connector_definition.get("properties") or {}).get("connectorUiConfig") or {}
+    cd_name = connector_definition.get("name")
+    cd_id = cd_props.get("id")
+
+    # Gate 2 / auto-fail #4 — name and connectorUiConfig.id identical.
+    if cd_name != cd_id:
+        findings.append(Finding("ccf.connector_id", "error",
+                                f"ConnectorDefinition 'name' ({cd_name!r}) and "
+                                f"'connectorUiConfig.id' ({cd_id!r}) must be identical"))
+    if len(cd_props.get("sampleQueries") or []) < 2:
+        findings.append(Finding("ccf.sample_queries", "error",
+                                "connectorUiConfig.sampleQueries must have at least 2 entries"))
+    if connector_definition.get("kind") != "Customizable":
+        findings.append(Finding("ccf.connector_kind", "error",
+                                "ConnectorDefinition 'kind' must be 'Customizable'"))
+    # Auto-fail #15 — CLv1 detection: a real CCF v2 file never carries pollerConfig/auth
+    # alongside connectorUiConfig in the same document.
+    if "pollerConfig" in connector_definition or "auth" in connector_definition:
+        findings.append(Finding("ccf.clv1_pattern", "error",
+                                "ConnectorDefinition appears to be CLv1 (contains pollerConfig/auth "
+                                "in the same file) — CLv2 requires separate files"))
+
+    # Auto-fail #18 — duplicate poller names.
+    names = [p.get("name") for p in poller_config]
+    dupes = {n for n in names if n and names.count(n) > 1}
+    if dupes:
+        findings.append(Finding("ccf.poller_names", "error",
+                                f"duplicate poller name(s) in PollerConfig array: {sorted(dupes)}"))
+
+    dcr_stream_keys = set()
+    for entry in dcr:
+        dcr_stream_keys.update((entry.get("properties") or {}).get("streamDeclarations") or {})
+
+    table_names = set()
+    if table:
+        for t in table:
+            t_name = t.get("name")
+            schema_name = ((t.get("properties") or {}).get("schema") or {}).get("name")
+            # Auto-fail #5 / #6 — Table naming.
+            if t_name != schema_name:
+                findings.append(Finding("ccf.table_name", "error",
+                                        f"Table 'name' ({t_name!r}) and 'schema.name' ({schema_name!r}) "
+                                        "must be identical"))
+            for candidate in (t_name, schema_name):
+                if candidate and "Custom-" in candidate:
+                    findings.append(Finding("ccf.table_custom_prefix", "error",
+                                            f"Table name must NOT contain 'Custom-': {candidate!r}"))
+                if candidate and not candidate.endswith("_CL"):
+                    findings.append(Finding("ccf.table_suffix", "error",
+                                            f"Table name must end in '_CL': {candidate!r}"))
+            if t_name:
+                table_names.add(t_name)
+
+            columns = ((t.get("properties") or {}).get("schema") or {}).get("columns") or []
+            col_names = {c.get("name") for c in columns if c.get("name")}
+            if "TimeGenerated" not in col_names:
+                findings.append(Finding("ccf.table_time_generated", "error",
+                                        "Table schema is missing a 'TimeGenerated' column"))
+            if "TenantId" in col_names:
+                findings.append(Finding("ccf.table_tenant_id", "error",
+                                        "Table schema must NOT declare 'TenantId' — Azure adds it automatically"))
+            bad_cols = col_names & _RESERVED_KQL_COLUMNS
+            if bad_cols:
+                findings.append(Finding("ccf.reserved_column", "error",
+                                        f"Table columns use reserved KQL keywords without renaming: {sorted(bad_cols)}"))
+
+    for poller in poller_config:
+        p = poller.get("properties") or {}
+        where = poller.get("name") or "<unnamed poller>"
+
+        # Auto-fail #3 — connectorDefinitionName must match ConnectorDefinition id.
+        if p.get("connectorDefinitionName") != cd_id:
+            findings.append(Finding("ccf.connector_ref", "error",
+                                    f"connectorDefinitionName ({p.get('connectorDefinitionName')!r}) does not "
+                                    f"match ConnectorDefinition id ({cd_id!r})", where))
+
+        stream_name = (p.get("dcrConfig") or {}).get("streamName")
+        # Auto-fail #7 — streamName must start with Custom-.
+        if stream_name and not stream_name.startswith("Custom-"):
+            findings.append(Finding("ccf.stream_prefix", "error",
+                                    f"dcrConfig.streamName must start with 'Custom-': {stream_name!r}", where))
+        # Auto-fail #2 — streamName must exist as a DCR streamDeclarations key.
+        if stream_name and stream_name not in dcr_stream_keys:
+            findings.append(Finding("ccf.stream_mismatch", "error",
+                                    f"dcrConfig.streamName {stream_name!r} has no matching "
+                                    f"streamDeclarations key in the DCR (found: {sorted(dcr_stream_keys)})", where))
+
+        auth = p.get("auth") or {}
+        auth_type = auth.get("type")
+        if auth_type == "OAuth2":
+            reserved_hit = _RESERVED_OAUTH2_PARAMS & set(auth.get("TokenEndpointQueryParameters") or {})
+            # Auto-fail #11.
+            if reserved_hit:
+                findings.append(Finding("ccf.oauth2_reserved_param", "error",
+                                        f"TokenEndpointQueryParameters contains reserved param(s): "
+                                        f"{sorted(reserved_hit)} — this fails with 'BadRequest: OAuth2 config error'",
+                                        where))
+        for field in _SECRET_AUTH_FIELDS:
+            value = auth.get(field)
+            if value is not None and not _looks_like_placeholder(value):
+                findings.append(Finding("ccf.hardcoded_secret", "error",
+                                        f"auth.{field} does not look like a {{{{placeholder}}}} or ARM "
+                                        f"expression — looks like a hardcoded literal", where))
+
+        # Auto-fail #13.
+        if p.get("logResponseContent") is True:
+            findings.append(Finding("ccf.log_response_content", "error",
+                                    "logResponseContent must not be true in production output", where))
+
+    for entry in dcr:
+        dp = entry.get("properties") or {}
+        dcr_name = entry.get("name") or ""
+        # Auto-fail #9 — DCR name length.
+        if len(dcr_name) > 65:
+            findings.append(Finding("ccf.dcr_name_length", "error",
+                                    f"DCR name is {len(dcr_name)} characters (max 65): {dcr_name!r}"))
+        if " " in dcr_name:
+            findings.append(Finding("ccf.dcr_name_spaces", "error",
+                                    f"DCR name must not contain spaces: {dcr_name!r}"))
+
+        for flow in dp.get("dataFlows") or []:
+            streams = flow.get("streams") or []
+            where = f"dataFlows[streams={streams}]"
+            # Auto-fail #16 — exactly one stream per dataFlows entry.
+            if len(streams) != 1:
+                findings.append(Finding("ccf.dataflow_streams", "error",
+                                        f"dataFlows entry must have exactly ONE stream, found {len(streams)}",
+                                        where))
+            transform = str(flow.get("transformKql") or "")
+            # Auto-fail #1 — TimeGenerated must be set.
+            if "TimeGenerated" not in transform:
+                findings.append(Finding("ccf.time_generated", "error",
+                                        "transformKql does not set TimeGenerated", where))
+
+            output_stream = flow.get("outputStream")
+            if table_names:
+                # Auto-fail #17 — outputStream required and must match "Custom-" + table name.
+                expected = {f"Custom-{t}" for t in table_names}
+                if output_stream not in expected:
+                    findings.append(Finding("ccf.output_stream", "error",
+                                            f"outputStream ({output_stream!r}) does not match any "
+                                            f"custom table as 'Custom-<TableName>' (expected one of {sorted(expected)})",
+                                            where))
+                elif output_stream:
+                    table_col_names: set[str] = set()
+                    for t in table or []:
+                        if f"Custom-{t.get('name')}" == output_stream:
+                            cols = ((t.get("properties") or {}).get("schema") or {}).get("columns") or []
+                            table_col_names = {c.get("name") for c in cols if c.get("name")}
+                    # Auto-fail #8 (heuristic) — every declared output column should be
+                    # traceable in the transform (as an extend/rename target or an
+                    # untouched passthrough field). Flag anything that never appears.
+                    missing = {
+                        c for c in table_col_names
+                        if c not in ("TimeGenerated",) and not re.search(rf"\b{re.escape(c)}\b", transform)
+                    }
+                    if missing:
+                        findings.append(Finding("ccf.kql_table_mismatch", "error",
+                                                f"Table column(s) never referenced in transformKql: {sorted(missing)}",
+                                                where))
+
+    findings.extend(_template_safety(raw, "ccf_connector"))
+    return _ok(findings), findings
+
+
 # ── shared ──────────────────────────────────────────────────────────────────
 
 def _stringify(value: Any) -> str:

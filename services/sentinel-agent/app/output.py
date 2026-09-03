@@ -85,6 +85,33 @@ def write_artifact(output_dir: Path, *, solution: str, kind: str, name: str, con
     return host_path
 
 
+def write_ccf_connector_files(
+    output_dir: Path, *, solution: str, name: str, files: dict[str, str]
+) -> dict[str, str]:
+    """Write a CCF connector's file set under ``{Solution}/Data Connectors/{name}_ccp/``,
+    mirroring the layout real Azure-Sentinel solutions use (see the reference examples
+    under skills/generate-sentinel-ccf-connector/reference/).
+
+    Unlike every other artifact here, one CCF draft is several files, not one — so this
+    is a sibling to `write_artifact` rather than a new `_KIND_LAYOUT` entry (whose
+    template only has room for a single `{name}` output path).
+
+    ``files`` keys are the fixed CCF suffixes (``ConnectorDefinition``, ``PollerConfig``,
+    ``DCR``, and optionally ``Table``); returns the same keys mapped to their host-side
+    display paths.
+    """
+    safe_name = _sanitize(name)
+    folder = f"Data Connectors/{safe_name}_ccp"
+    host_paths: dict[str, str] = {}
+    for suffix, content in files.items():
+        rel = f"{folder}/{safe_name}_{suffix}.json"
+        target, host_path = _resolve_target(output_dir, solution, rel)
+        target.write_text(content, encoding="utf-8")
+        target.chmod(0o666)
+        host_paths[suffix] = host_path
+    return host_paths
+
+
 def write_binary_artifact(
     output_dir: Path, *, solution: str, rel_name: str, content: bytes
 ) -> tuple[Path, str]:

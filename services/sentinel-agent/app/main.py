@@ -27,6 +27,7 @@ from .azure.logs import LogsClient
 from .azure.token import TokenProvider
 from .config import get_settings
 from .generators.analytic_rule import AnalyticRuleRequest, generate_analytic_rule, revise_analytic_rule
+from .generators.ccf_connector import CcfConnectorRequest, generate_ccf_connector, revise_ccf_connector
 from .generators.parser import ParserRequest, generate_parser, revise_parser
 from .generators.tdd import TddRequest, check_tdd_structure, generate_tdd, revise_tdd
 from .generators.workbook import WorkbookRequest, generate_workbook
@@ -154,8 +155,26 @@ class TddBody(BaseModel):
     session_id: str | None = None
 
 
+class CcfConnectorBody(BaseModel):
+    company: str = Field(..., description="e.g. Palo Alto")
+    product: str = Field(..., description="e.g. Prisma Cloud CWPP")
+    log_type: str = Field(..., description="e.g. Logs, Events, Alerts, AuditLogs")
+    publisher: str = Field(..., description="Shown in the Sentinel UI")
+    auth_type: str = Field(..., description="APIKey / Basic / OAuth2 / JwtToken")
+    pagination_type: str = Field(..., description="Offset / NextPageToken / PersistentToken / LinkHeader / None")
+    api_endpoints: str = Field(..., description="Full API endpoint URL(s)")
+    response_structure: str = Field(..., description="Sample API response, or a field-name/type list")
+    table: str | None = Field(None, description="Existing standard table name, if applicable")
+    reference_connector: str | None = Field(
+        None, description="Reference example folder to mirror, e.g. 'GitHub' or 'Sophos Endpoint Protection'"
+    )
+    notes: str | None = None
+    solution: str | None = Field(None, description="Solution/vendor name, for the output folder")
+    session_id: str | None = None
+
+
 class WorkbookBody(BaseModel):
-    parser: str
+    parser: str = Field(..., description="Primary/default parser. The only one needed when the workbook covers a single log type.")
     product: str
     topic: str
     mode: Literal["generate", "replicate"] = "generate"
@@ -325,9 +344,24 @@ async def post_generate_workbook(body: WorkbookBody) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.post("/generate/ccf-connector")
+async def post_generate_ccf_connector(body: CcfConnectorBody) -> dict[str, Any]:
+    try:
+        return await generate_ccf_connector(
+            CcfConnectorRequest(**body.model_dump()),
+            runtime=app.state.runtime,
+            settings=settings,
+            store=app.state.store,
+            logs=app.state.logs,
+        )
+    except LLMUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 _REVISERS = {
     "parser": revise_parser,
     "analytic_rule": revise_analytic_rule,
+    "ccf_connector": revise_ccf_connector,
 }
 
 

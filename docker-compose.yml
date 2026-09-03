@@ -43,6 +43,7 @@ services:
       - ./skills/generate-sentinel-workbook/SKILL.md:/prompts/generate-sentinel-workbook.md:ro
       - ./skills/generate-sentinel-analytic-rule/SKILL.md:/prompts/generate-sentinel-analytic-rule.md:ro
       - ./skills/generate-sentinel-tdd/SKILL.md:/prompts/generate-sentinel-tdd.md:ro
+      - ./skills/generate-sentinel-ccf-connector/SKILL.md:/prompts/generate-sentinel-ccf-connector.md:ro
       # The same skill's scripts/ (md_to_docx.py) and templates/ (.drawio
       # diagrams) — driven deterministically by app/generators/tdd_docx.py
       # once a TDD draft's markdown validates, since the tool-calling agent
@@ -56,6 +57,7 @@ services:
       # folder — mount one subpath per skill that has any.
       - ./skills/generate-sentinel-parser/reference:/reference/parser:ro
       - ./skills/generate-sentinel-workbook/reference:/reference/workbook:ro
+      - ./skills/generate-sentinel-ccf-connector/reference:/reference/ccf_connector:ro
       # Where generated artifacts land for the analyst to read directly —
       # laid out like a real Azure-Sentinel solution repo. Read-write,
       # unlike the skill/reference mounts above.
