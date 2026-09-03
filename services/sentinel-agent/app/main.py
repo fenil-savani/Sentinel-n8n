@@ -166,6 +166,13 @@ class WorkbookBody(BaseModel):
     tabs: list[str] = Field(default_factory=list)
     notes: str | None = None
     solution: str | None = Field(None, description="Solution/vendor name, for the output folder")
+    parsers: list[str] = Field(
+        default_factory=list,
+        description="Additional parsers, for a workbook spanning more than one log type/table "
+                    "(e.g. one workbook covering 3 different parsers). Leave empty for the "
+                    "normal single-parser case. When set, every planned panel must declare "
+                    "which of 'parser' + these it queries — enforced during generation.",
+    )
     session_id: str | None = None
 
 
@@ -405,7 +412,8 @@ async def post_lint(body: LintBody) -> dict[str, Any]:
             return {"pass": False, "findings": [
                 {"rule": "workbook.json", "severity": "error", "message": str(exc)[:400]}
             ]}
-        ok, findings = lint_workbook(doc, parser=(draft.get("summary") or {}).get("parser"))
+        wb_summary = draft.get("summary") or {}
+        ok, findings = lint_workbook(doc, parser=wb_summary.get("parsers") or wb_summary.get("parser"))
 
     return {"pass": ok, "findings": [f.as_dict() for f in findings]}
 

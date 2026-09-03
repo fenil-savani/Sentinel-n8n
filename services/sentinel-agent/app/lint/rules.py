@@ -229,8 +229,14 @@ def lint_analytic_rule(doc: dict[str, Any], raw: str) -> tuple[bool, list[Findin
 
 # ── workbook ────────────────────────────────────────────────────────────────
 
-def lint_workbook(wb: dict[str, Any], *, parser: str | None = None) -> tuple[bool, list[Finding]]:
+def lint_workbook(
+    wb: dict[str, Any], *, parser: str | list[str] | None = None
+) -> tuple[bool, list[Finding]]:
+    """`parser` is a single name in the common case, or a list when the
+    workbook spans multiple parsers (see WorkbookRequest.parsers) — a panel
+    passes Step 11 if it references ANY of them."""
     findings: list[Finding] = []
+    valid_parsers = {parser} if isinstance(parser, str) else set(parser or ())
 
     if wb.get("version") != "Notebook/1.0":
         findings.append(Finding("workbook.version", "error",
@@ -263,7 +269,7 @@ def lint_workbook(wb: dict[str, Any], *, parser: str | None = None) -> tuple[boo
         findings.append(Finding("workbook.panels", "error", "no query panels found"))
 
     for panel in panels:
-        findings.extend(_check_panel(panel, parser))
+        findings.extend(_check_panel(panel, valid_parsers))
 
     findings.extend(_template_safety(_stringify(wb), "workbook"))
     return _ok(findings), findings
@@ -305,7 +311,7 @@ _REQUIRED_PANEL_FIELDS = {
 }
 
 
-def _check_panel(item: dict[str, Any], parser: str | None) -> list[Finding]:
+def _check_panel(item: dict[str, Any], valid_parsers: set[str]) -> list[Finding]:
     findings: list[Finding] = []
     content = item.get("content") or {}
     where = content.get("title") or item.get("name") or "<unnamed panel>"
@@ -352,13 +358,13 @@ def _check_panel(item: dict[str, Any], parser: str | None) -> list[Finding]:
             )
         )
 
-    # Step 11 — panels must go through the parser, not the raw custom table.
+    # Step 11 — panels must go through a parser, not the raw custom table.
     raw_tables = set(_RAW_CL_TABLE.findall(query))
-    if raw_tables and parser and parser not in query:
+    if raw_tables and valid_parsers and not any(p in query for p in valid_parsers):
         findings.append(
             Finding("workbook.parser_reference", "error",
                     f"query hits raw table(s) {', '.join(sorted(raw_tables))} instead of "
-                    f"the '{parser}' parser", where)
+                    f"one of the parsers {sorted(valid_parsers)}", where)
         )
 
     if viz in ("grid", "table"):

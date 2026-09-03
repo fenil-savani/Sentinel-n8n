@@ -320,6 +320,12 @@ class Toolbox:
                             "properties": {
                                 "id": {"type": "string"},
                                 "title": {"type": "string"},
+                                "parser": {
+                                    "type": "string",
+                                    "description": "Only when multiple parsers are in scope: "
+                                                   "which one this panel queries. Omit in "
+                                                   "single-parser mode.",
+                                },
                                 "viz_type": {"type": "string", "enum": VIZ_TYPES},
                                 "group": {
                                     "type": "string",
