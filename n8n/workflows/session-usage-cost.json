@@ -1,0 +1,53 @@
+{
+  "id": "sentinel-session-usage-cost",
+  "name": "Sentinel — Session Usage Cost",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trig",
+      "name": "When clicking 'Execute workflow'",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://sentinel-agent:8000/usage/session/PASTE_SESSION_ID_HERE",
+        "options": {}
+      },
+      "id": "call",
+      "name": "Get Session Usage Cost",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -80,
+        0
+      ],
+      "notes": "Edit the session id in the URL above (replace PASTE_SESSION_ID_HERE), then click Execute workflow. Output splits cost/tokens into orchestrator_chat vs. generators, plus a combined total — see app/main.py's GET /usage/session/{session_id}."
+    }
+  ],
+  "connections": {
+    "When clicking 'Execute workflow'": {
+      "main": [
+        [
+          {
+            "node": "Get Session Usage Cost",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "active": false
+}

@@ -18,9 +18,15 @@ from ..lint.rules import lint_analytic_rule
 from ..llm.base import AgentRuntime, LLMUnavailable, RunResult
 from ..output import write_artifact
 from ..prompts import analytic_rule_system
-from ..store import Store
+from ..store import Store, new_id
 from ..tools import Toolbox
-from ._shared import handle_pause_or_failure, revision_prompt
+from ._shared import (
+    handle_pause_or_failure,
+    provider_name,
+    revision_prompt,
+    usage_recorder,
+    usage_summary,
+)
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +110,11 @@ async def generate_analytic_rule(
     draft_id = await store.create_draft(
         kind="analytic_rule", name=request.name, session_id=request.session_id
     )
+    run_id = new_id("run")
+    on_call = usage_recorder(
+        store=store, run_id=run_id, draft_id=draft_id, session_id=request.session_id,
+        provider=provider_name(runtime), call_site="analytic_rule",
+    )
 
     toolbox = Toolbox(settings, logs)
     tools = toolbox.analytic_rule_tools()
@@ -118,6 +129,7 @@ async def generate_analytic_rule(
             user=request.to_prompt(),
             tools=tools,
             model=settings.llm_model_parser,
+            on_call=on_call,
         )
     except LLMUnavailable as exc:
         log.warning("analytic_rule draft %s: LLM unavailable | error=%s", draft_id, exc)
@@ -126,7 +138,7 @@ async def generate_analytic_rule(
         raise
 
     return await _finish(
-        draft_id, result=result, table=request.table,
+        draft_id, run_id=run_id, result=result, table=request.table,
         solution=request.solution or request.name, settings=settings, store=store, logs=logs,
         fallback_name=request.name,
     )
@@ -147,6 +159,11 @@ async def revise_analytic_rule(
                 "error": f"no analytic rule draft {draft_id}"}
 
     summary = draft.get("summary") or {}
+    run_id = new_id("run")
+    on_call = usage_recorder(
+        store=store, run_id=run_id, draft_id=draft_id, session_id=draft.get("session_id"),
+        provider=provider_name(runtime), call_site="analytic_rule",
+    )
     toolbox = Toolbox(settings, logs)
     tools = toolbox.analytic_rule_tools()
     available = runtime.supported_tool_names(tools)
@@ -159,6 +176,7 @@ async def revise_analytic_rule(
         result = await runtime.run(
             system=analytic_rule_system(settings.prompts_dir, available),
             user=user, tools=tools, model=settings.llm_model_parser,
+            on_call=on_call,
         )
     except LLMUnavailable as exc:
         log.warning("analytic_rule draft %s: LLM unavailable during revision | error=%s", draft_id, exc)
@@ -167,7 +185,7 @@ async def revise_analytic_rule(
         raise
 
     return await _finish(
-        draft_id, result=result, table=summary.get("table", ""),
+        draft_id, run_id=run_id, result=result, table=summary.get("table", ""),
         solution=summary.get("solution") or draft["name"], settings=settings, store=store, logs=logs,
         fallback_name=draft["name"],
     )
@@ -176,6 +194,7 @@ async def revise_analytic_rule(
 async def _finish(
     draft_id: str,
     *,
+    run_id: str,
     result: RunResult,
     table: str,
     solution: str,
@@ -184,12 +203,14 @@ async def _finish(
     logs: LogsClient | None,
     fallback_name: str,
 ) -> dict[str, Any]:
+    usage = await usage_summary(store, run_id)
+
     paused = handle_pause_or_failure(draft_id, result, "submit_analytic_rule")
     if paused is not None:
         response, validation = paused
         log.info("analytic_rule draft %s: %s", draft_id, response["status"])
         await store.update_draft(draft_id, status=response["status"], validation=validation)
-        return response
+        return {**response, "usage": usage}
 
     raw = _strip_fences((result.payload or {}).get("yaml", ""))
 
@@ -201,7 +222,7 @@ async def _finish(
             validation={"error": "invalid_yaml", "message": str(exc)[:800]},
         )
         return {"draft_id": draft_id, "status": "failed",
-                "error": f"Generated YAML does not parse: {exc}"}
+                "error": f"Generated YAML does not parse: {exc}", "usage": usage}
 
     if not isinstance(doc, dict):
         await store.update_draft(
@@ -209,7 +230,7 @@ async def _finish(
             validation={"error": "invalid_yaml", "message": "top level is not a mapping"},
         )
         return {"draft_id": draft_id, "status": "failed",
-                "error": "Generated YAML is not a mapping."}
+                "error": "Generated YAML is not a mapping.", "usage": usage}
 
     lint_ok, findings = lint_analytic_rule(doc, raw)
     validation: dict[str, Any] = {
@@ -262,7 +283,7 @@ async def _finish(
     log.info("analytic_rule draft %s -> %s", draft_id, status)
 
     return {"draft_id": draft_id, "status": status, "summary": summary,
-            "validation": validation}
+            "validation": validation, "usage": usage}
 
 
 def _strip_fences(text: str) -> str:

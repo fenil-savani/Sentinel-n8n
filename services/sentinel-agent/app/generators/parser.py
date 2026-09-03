@@ -13,6 +13,7 @@ paying for a round trip on a document that was never going to be valid.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -25,11 +26,28 @@ from ..lint.rules import lint_parser
 from ..llm.base import AgentRuntime, LLMUnavailable, RunResult
 from ..output import write_artifact
 from ..prompts import parser_system
-from ..store import Store
+from ..store import Store, new_id
 from ..tools import Toolbox
-from ._shared import handle_pause_or_failure, revision_prompt
+from ._shared import (
+    handle_pause_or_failure,
+    provider_name,
+    revision_prompt,
+    usage_recorder,
+    usage_summary,
+)
 
 log = logging.getLogger(__name__)
+
+
+def _snake(text: str) -> str:
+    """Lowercase snake_case, per the skill's naming rule — collapses spaces,
+    hyphens, and any other punctuation into single underscores. Without this,
+    a two-word product/logtype (e.g. "Vectra AI" / "Account Entities") builds
+    a fallback alias containing literal spaces, which isn't a valid KQL
+    function identifier — the model then correctly refuses and asks for
+    clarification instead of guessing, but there's no reason to make it ask
+    when the fix is mechanical."""
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
 
 @dataclass(slots=True)
@@ -89,7 +107,7 @@ class ParserRequest:
         lines += [
             "",
             f"The parser's FunctionName and FunctionAlias must both be "
-            f"'{self.product.lower()}_{self.logtype.lower()}'.",
+            f"'{_snake(self.product)}_{_snake(self.logtype)}'.",
             "Submit the complete YAML with submit_parser when you are done.",
         ]
         return "\n".join(lines)
@@ -103,9 +121,14 @@ async def generate_parser(
     store: Store,
     logs: LogsClient | None,
 ) -> dict[str, Any]:
-    alias = f"{request.product.lower()}_{request.logtype.lower()}"
+    alias = f"{_snake(request.product)}_{_snake(request.logtype)}"
     draft_id = await store.create_draft(
         kind="parser", name=alias, session_id=request.session_id
+    )
+    run_id = new_id("run")
+    on_call = usage_recorder(
+        store=store, run_id=run_id, draft_id=draft_id, session_id=request.session_id,
+        provider=provider_name(runtime), call_site="parser",
     )
 
     toolbox = Toolbox(settings, logs)
@@ -122,6 +145,7 @@ async def generate_parser(
             user=request.to_prompt(available, settings.reference_dir),
             tools=tools,
             model=settings.llm_model_parser,
+            on_call=on_call,
         )
     except LLMUnavailable as exc:
         # Backend problem, not a generation problem. Drop the placeholder row so
@@ -133,7 +157,7 @@ async def generate_parser(
         raise
 
     return await _finish(
-        draft_id, result=result, table=request.table,
+        draft_id, run_id=run_id, result=result, table=request.table,
         solution=request.solution or request.product, settings=settings, store=store, logs=logs,
         fallback_alias=alias,
     )
@@ -154,6 +178,11 @@ async def revise_parser(
                 "error": f"no parser draft {draft_id}"}
 
     summary = draft.get("summary") or {}
+    run_id = new_id("run")
+    on_call = usage_recorder(
+        store=store, run_id=run_id, draft_id=draft_id, session_id=draft.get("session_id"),
+        provider=provider_name(runtime), call_site="parser",
+    )
     toolbox = Toolbox(settings, logs)
     tools = toolbox.parser_tools()
     available = runtime.supported_tool_names(tools)
@@ -166,6 +195,7 @@ async def revise_parser(
         result = await runtime.run(
             system=parser_system(settings.prompts_dir, available),
             user=user, tools=tools, model=settings.llm_model_parser,
+            on_call=on_call,
         )
     except LLMUnavailable as exc:
         log.warning("parser draft %s: LLM unavailable during revision | error=%s", draft_id, exc)
@@ -174,7 +204,7 @@ async def revise_parser(
         raise
 
     return await _finish(
-        draft_id, result=result, table=summary.get("table", ""),
+        draft_id, run_id=run_id, result=result, table=summary.get("table", ""),
         solution=summary.get("solution") or draft["name"], settings=settings, store=store, logs=logs,
         fallback_alias=draft["name"],
     )
@@ -183,6 +213,7 @@ async def revise_parser(
 async def _finish(
     draft_id: str,
     *,
+    run_id: str,
     result: RunResult,
     table: str,
     solution: str,
@@ -191,12 +222,14 @@ async def _finish(
     logs: LogsClient | None,
     fallback_alias: str,
 ) -> dict[str, Any]:
+    usage = await usage_summary(store, run_id)
+
     paused = handle_pause_or_failure(draft_id, result, "submit_parser")
     if paused is not None:
         response, validation = paused
         log.info("parser draft %s: %s", draft_id, response["status"])
         await store.update_draft(draft_id, status=response["status"], validation=validation)
-        return response
+        return {**response, "usage": usage}
 
     raw = _strip_fences((result.payload or {}).get("yaml", ""))
 
@@ -208,7 +241,7 @@ async def _finish(
             validation={"error": "invalid_yaml", "message": str(exc)[:800]},
         )
         return {"draft_id": draft_id, "status": "failed",
-                "error": f"Generated YAML does not parse: {exc}"}
+                "error": f"Generated YAML does not parse: {exc}", "usage": usage}
 
     if not isinstance(doc, dict):
         await store.update_draft(
@@ -216,7 +249,7 @@ async def _finish(
             validation={"error": "invalid_yaml", "message": "top level is not a mapping"},
         )
         return {"draft_id": draft_id, "status": "failed",
-                "error": "Generated YAML is not a mapping."}
+                "error": "Generated YAML is not a mapping.", "usage": usage}
 
     lint_ok, findings = lint_parser(doc, raw)
     validation: dict[str, Any] = {
@@ -271,7 +304,7 @@ async def _finish(
     log.info("parser draft %s -> %s", draft_id, status)
 
     return {"draft_id": draft_id, "status": status, "summary": summary,
-            "validation": validation}
+            "validation": validation, "usage": usage}
 
 
 def _strip_fences(text: str) -> str:

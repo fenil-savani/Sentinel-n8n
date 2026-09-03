@@ -42,15 +42,36 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Any
 
+from ..store import Store, new_id
 from . import cli_exec
+from .claude_cli import usage_from_envelope
 
 log = logging.getLogger(__name__)
 
 _RESPOND = "__respond__"
+
+# The orchestrator agent's system prompt (see n8n/workflows/orchestrator.json)
+# tells the model its literal session id so it can pass it to generate_*/
+# revise_draft tool calls — n8n resolves the `{{ $json.sessionId }}`
+# expression before this request ever arrives, so the real value is sitting
+# in plain text in the system message. Reusing it here rather than plumbing
+# a separate identifier through is what lets orchestrator-chat llm_usage
+# rows join up with the generator-tool rows from the same session.
+_SESSION_ID_RE = re.compile(r"chat session id is exactly `([^`]+)`")
+
+
+def extract_session_id(messages: list[dict[str, Any]]) -> str | None:
+    for m in messages:
+        if m.get("role") == "system":
+            match = _SESSION_ID_RE.search(str(m.get("content") or ""))
+            if match:
+                return match.group(1)
+    return None
 
 
 def build_system_prompt(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> str:
@@ -169,10 +190,12 @@ def to_openai_response(
     }
 
 
-async def handle(body: dict[str, Any], settings: Any) -> dict[str, Any]:
+async def handle(body: dict[str, Any], settings: Any, store: Store) -> dict[str, Any]:
     messages = body.get("messages") or []
     tools = body.get("tools") or []
+    session_id = extract_session_id(messages)
 
+    started = time.monotonic()
     envelope, tool_trace, thinking = await cli_exec.run_claude_once(
         bin_path=settings.claude_cli_bin,
         oauth_token=settings.claude_code_oauth_token,
@@ -183,6 +206,24 @@ async def handle(body: dict[str, Any], settings: Any) -> dict[str, Any]:
         schema=build_schema(tools),
         add_dir=None,  # the orchestrator's chat model needs no file access
     )
+    latency_ms = int((time.monotonic() - started) * 1000)
+
+    # One `llm_usage` row per chat turn, `call_site="orchestrator_chat"` —
+    # kept distinct from the generator rows (call_site="parser"/"workbook_*"/
+    # etc.) recorded elsewhere for the *same* session_id, so the two can be
+    # queried and compared separately (e.g. "how much did the conversation
+    # itself cost vs. the artifacts it generated"). Never allowed to break
+    # the chat turn over a transient DB hiccup — logged and swallowed,
+    # mirroring generators/_shared.py's usage_recorder.
+    try:
+        await store.record_llm_usage(
+            run_id=new_id("run"), draft_id=None, session_id=session_id,
+            provider="claude_cli", model=settings.orchestrator_model,
+            call_site="orchestrator_chat", iteration=envelope.get("num_turns", 0),
+            usage=usage_from_envelope(envelope), latency_ms=latency_ms,
+        )
+    except Exception as exc:  # noqa: BLE001 - deliberate: never break the chat turn over this
+        log.warning("orchestrator chat: failed to record llm usage: %s", exc)
 
     text = envelope.get("result") or ""
     payload = envelope.get("structured_output")

@@ -16,6 +16,8 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from ulid import ULID
 
+from ..llm.pricing import Usage, compute_cost_usd
+
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{ULID()}"
@@ -169,3 +171,112 @@ class Store:
                 "SELECT * FROM deployments WHERE id = %s", (dep_id,)
             )
             return await cur.fetchone()
+
+    # ── llm usage ────────────────────────────────────────────────────────
+    # One row per LLM call (see db/migrations/003_add_llm_usage.sql). Cost is
+    # computed here, once, from the shared pricing table — the only call
+    # site that turns a Usage into a dollar figure — so AnthropicRuntime and
+    # ClaudeCliRuntime rows stay comparable in the same aggregate.
+
+    async def record_llm_usage(
+        self,
+        *,
+        run_id: str,
+        draft_id: str | None,
+        session_id: str | None,
+        provider: str,
+        model: str,
+        call_site: str,
+        iteration: int,
+        usage: Usage,
+        latency_ms: int | None,
+    ) -> str:
+        usage_id = new_id("llu")
+        cost_usd = compute_cost_usd(model, usage)
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO llm_usage (id, run_id, draft_id, session_id, provider, model, "
+                "call_site, iteration, input_tokens, output_tokens, cache_creation_5m_tokens, "
+                "cache_creation_1h_tokens, cache_read_tokens, cost_usd, "
+                "provider_reported_cost_usd, latency_ms) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    usage_id, run_id, draft_id, session_id, provider, model, call_site, iteration,
+                    usage.input_tokens, usage.output_tokens, usage.cache_creation_5m_tokens,
+                    usage.cache_creation_1h_tokens, usage.cache_read_tokens, cost_usd,
+                    usage.provider_reported_cost_usd, latency_ms,
+                ),
+            )
+        return usage_id
+
+    async def usage_totals_for_run(self, run_id: str) -> dict[str, Any]:
+        """Queried rather than accumulated in Python so the response total
+        matches what's actually durable, even on a partially-failed run."""
+        async with self._pool.connection() as conn:
+            cur = await conn.cursor(row_factory=dict_row).execute(
+                "SELECT count(*) AS calls, "
+                "coalesce(sum(input_tokens), 0) AS total_input_tokens, "
+                "coalesce(sum(output_tokens), 0) AS total_output_tokens, "
+                "coalesce(sum(cache_read_tokens), 0) AS total_cache_read_tokens, "
+                "coalesce(sum(cache_creation_5m_tokens + cache_creation_1h_tokens), 0) "
+                "    AS total_cache_write_tokens, "
+                "sum(cost_usd) AS total_cost_usd "
+                "FROM llm_usage WHERE run_id = %s",
+                (run_id,),
+            )
+            row = await cur.fetchone()
+        row["run_id"] = run_id
+        return row
+
+    async def usage_totals_for_session(self, session_id: str) -> dict[str, Any]:
+        """Same underlying rows as usage_totals_for_run, but grouped into two
+        buckets — the orchestrator's own chat turns (call_site=
+        'orchestrator_chat', from app/llm/openai_compat.py) vs. everything
+        its generate_*/revise_draft tool calls did (every other call_site) —
+        so the two can be compared directly instead of only ever seeing a
+        session's combined total."""
+        async with self._pool.connection() as conn:
+            cur = await conn.cursor(row_factory=dict_row).execute(
+                "SELECT "
+                "  CASE WHEN call_site = 'orchestrator_chat' THEN 'orchestrator_chat' "
+                "       ELSE 'generators' END AS bucket, "
+                "  count(*) AS calls, "
+                "  coalesce(sum(input_tokens), 0) AS total_input_tokens, "
+                "  coalesce(sum(output_tokens), 0) AS total_output_tokens, "
+                "  coalesce(sum(cache_read_tokens), 0) AS total_cache_read_tokens, "
+                "  coalesce(sum(cache_creation_5m_tokens + cache_creation_1h_tokens), 0) "
+                "      AS total_cache_write_tokens, "
+                "  sum(cost_usd) AS total_cost_usd "
+                "FROM llm_usage WHERE session_id = %s "
+                "GROUP BY bucket",
+                (session_id,),
+            )
+            rows = await cur.fetchall()
+
+        empty = {
+            "calls": 0, "total_input_tokens": 0, "total_output_tokens": 0,
+            "total_cache_read_tokens": 0, "total_cache_write_tokens": 0, "total_cost_usd": None,
+        }
+        buckets = {"orchestrator_chat": dict(empty), "generators": dict(empty)}
+        for row in rows:
+            bucket = row.pop("bucket")
+            cost = row["total_cost_usd"]
+            row["total_cost_usd"] = float(cost) if cost is not None else None
+            buckets[bucket] = row
+
+        chat, gen = buckets["orchestrator_chat"], buckets["generators"]
+        costs = [c for c in (chat["total_cost_usd"], gen["total_cost_usd"]) if c is not None]
+        total = {
+            "calls": chat["calls"] + gen["calls"],
+            "total_input_tokens": chat["total_input_tokens"] + gen["total_input_tokens"],
+            "total_output_tokens": chat["total_output_tokens"] + gen["total_output_tokens"],
+            "total_cache_read_tokens": chat["total_cache_read_tokens"] + gen["total_cache_read_tokens"],
+            "total_cache_write_tokens": chat["total_cache_write_tokens"] + gen["total_cache_write_tokens"],
+            "total_cost_usd": sum(costs) if costs else None,
+        }
+        return {
+            "session_id": session_id,
+            "orchestrator_chat": chat,
+            "generators": gen,
+            "total": total,
+        }

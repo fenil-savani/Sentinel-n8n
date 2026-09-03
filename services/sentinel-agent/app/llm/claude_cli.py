@@ -57,13 +57,39 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
 from . import cli_exec
-from .base import AgentRuntime, RunResult, Tool
+from .base import AgentRuntime, RunResult, Tool, UsageCallback
+from .pricing import Usage
 
 log = logging.getLogger(__name__)
+
+
+def usage_from_envelope(envelope: dict[str, Any]) -> Usage:
+    """Normalize the CLI's NDJSON `result` envelope `usage` dict into our
+    shared `Usage` shape, plus its self-reported `total_cost_usd` as a
+    cross-check column (never used in an aggregate — see pricing.py).
+
+    Public (not `_`-prefixed): also used by openai_compat.py for the n8n
+    orchestrator chat proxy, which goes through the same CLI envelope shape."""
+    usage = envelope.get("usage") or {}
+    cache_creation = usage.get("cache_creation") or {}
+    cache_5m = cache_creation.get("ephemeral_5m_input_tokens")
+    cache_1h = cache_creation.get("ephemeral_1h_input_tokens")
+    if cache_5m is None and cache_1h is None:
+        cache_5m = usage.get("cache_creation_input_tokens", 0) or 0
+        cache_1h = 0
+    return Usage(
+        input_tokens=usage.get("input_tokens", 0) or 0,
+        output_tokens=usage.get("output_tokens", 0) or 0,
+        cache_creation_5m_tokens=cache_5m or 0,
+        cache_creation_1h_tokens=cache_1h or 0,
+        cache_read_tokens=usage.get("cache_read_input_tokens", 0) or 0,
+        provider_reported_cost_usd=envelope.get("total_cost_usd"),
+    )
 
 
 class ClaudeCliRuntime(AgentRuntime):
@@ -131,10 +157,12 @@ class ClaudeCliRuntime(AgentRuntime):
         tools: list[Tool],
         model: str,
         max_iterations: int = 24,  # no CLI equivalent (no --max-turns); ignored
+        on_call: UsageCallback | None = None,
     ) -> RunResult:
         by_name = self._index(tools)
         schema = self._output_schema([t for t in tools if t.terminal])
 
+        started = time.monotonic()
         envelope, tool_trace, thinking = await cli_exec.run_claude_once(
             bin_path=self._bin_path,
             oauth_token=self._oauth_token,
@@ -145,6 +173,15 @@ class ClaudeCliRuntime(AgentRuntime):
             schema=schema,
             add_dir=str(self._reference_dir),
         )
+        latency_ms = int((time.monotonic() - started) * 1000)
+
+        # One call from this module's perspective even though the CLI
+        # internally multi-turns — that internal looping is opaque to us, so
+        # this fires once per run() invocation (unlike AnthropicRuntime, whose
+        # on_call fires once per loop iteration).
+        call_usage = usage_from_envelope(envelope)
+        if on_call is not None:
+            await on_call(call_usage, model, envelope.get("num_turns", 0), latency_ms)
 
         text = envelope.get("result") or ""
         payload = envelope.get("structured_output")
@@ -195,4 +232,5 @@ class ClaudeCliRuntime(AgentRuntime):
             text=text,
             iterations=envelope.get("num_turns", 0),
             tool_trace=tool_trace,
+            usage=call_usage,
         )

@@ -234,7 +234,7 @@ async def get_models() -> dict[str, Any]:
 @app.post("/v1/chat/completions", response_model=None)
 async def post_chat_completions(body: ChatCompletionBody) -> dict[str, Any] | StreamingResponse:
     try:
-        response = await openai_compat.handle(body.model_dump(), settings)
+        response = await openai_compat.handle(body.model_dump(), settings, app.state.store)
     except LLMUnavailable as exc:
         # OpenAI-shaped error body so LangChain surfaces a sensible message
         # instead of a raw parse failure.
@@ -436,6 +436,16 @@ async def get_draft(draft_id: str) -> dict[str, Any]:
 @app.get("/drafts")
 async def list_drafts(session_id: str | None = None, limit: int = 20) -> dict[str, Any]:
     return {"drafts": await app.state.store.list_drafts(session_id, limit)}
+
+
+# ── LLM usage/cost ────────────────────────────────────────────────────────
+# Read-only over the llm_usage table (db/migrations/003_add_llm_usage.sql).
+# Not exposed to the orchestrator LLM as a tool — it's for operators checking
+# spend, not something the analyst should be able to ask the agent to run.
+
+@app.get("/usage/session/{session_id}")
+async def get_session_usage(session_id: str) -> dict[str, Any]:
+    return await app.state.store.usage_totals_for_session(session_id)
 
 
 # ── deployment records (written by the n8n deploy workflow) ─────────────────

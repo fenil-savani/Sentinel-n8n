@@ -23,9 +23,15 @@ from ..config import Settings
 from ..llm.base import AgentRuntime, LLMUnavailable, RunResult
 from ..output import write_artifact
 from ..prompts import tdd_system
-from ..store import Store
+from ..store import Store, new_id
 from ..tools import Toolbox
-from ._shared import handle_pause_or_failure, revision_prompt
+from ._shared import (
+    handle_pause_or_failure,
+    provider_name,
+    revision_prompt,
+    usage_recorder,
+    usage_summary,
+)
 from .tdd_docx import build_docx
 
 log = logging.getLogger(__name__)
@@ -88,6 +94,11 @@ async def generate_tdd(
 ) -> dict[str, Any]:
     name = f"{request.vendor}_{request.product}_TDD"
     draft_id = await store.create_draft(kind="tdd", name=name, session_id=request.session_id)
+    run_id = new_id("run")
+    on_call = usage_recorder(
+        store=store, run_id=run_id, draft_id=draft_id, session_id=request.session_id,
+        provider=provider_name(runtime), call_site="tdd",
+    )
 
     toolbox = Toolbox(settings, logs=None)
     tools = toolbox.tdd_tools()
@@ -102,6 +113,7 @@ async def generate_tdd(
             user=request.to_prompt(),
             tools=tools,
             model=settings.llm_model_parser,
+            on_call=on_call,
         )
     except LLMUnavailable as exc:
         log.warning("tdd draft %s: LLM unavailable | error=%s", draft_id, exc)
@@ -110,7 +122,7 @@ async def generate_tdd(
         raise
 
     return await _finish(
-        draft_id, result=result, components=request.components,
+        draft_id, run_id=run_id, result=result, components=request.components,
         solution=request.solution or request.vendor, settings=settings, store=store,
         fallback_name=name, vendor=request.vendor, product=request.product,
     )
@@ -130,6 +142,11 @@ async def revise_tdd(
                 "error": f"no TDD draft {draft_id}"}
 
     summary = draft.get("summary") or {}
+    run_id = new_id("run")
+    on_call = usage_recorder(
+        store=store, run_id=run_id, draft_id=draft_id, session_id=draft.get("session_id"),
+        provider=provider_name(runtime), call_site="tdd",
+    )
     toolbox = Toolbox(settings, logs=None)
     tools = toolbox.tdd_tools()
     available = runtime.supported_tool_names(tools)
@@ -142,6 +159,7 @@ async def revise_tdd(
         result = await runtime.run(
             system=tdd_system(settings.prompts_dir, available),
             user=user, tools=tools, model=settings.llm_model_parser,
+            on_call=on_call,
         )
     except LLMUnavailable as exc:
         log.warning("tdd draft %s: LLM unavailable during revision | error=%s", draft_id, exc)
@@ -150,7 +168,7 @@ async def revise_tdd(
         raise
 
     return await _finish(
-        draft_id, result=result, components=summary.get("components") or [],
+        draft_id, run_id=run_id, result=result, components=summary.get("components") or [],
         solution=summary.get("solution") or draft["name"], settings=settings, store=store,
         fallback_name=draft["name"],
         vendor=summary.get("vendor", ""), product=summary.get("product", ""),
@@ -160,6 +178,7 @@ async def revise_tdd(
 async def _finish(
     draft_id: str,
     *,
+    run_id: str,
     result: RunResult,
     components: list[str],
     solution: str,
@@ -169,12 +188,14 @@ async def _finish(
     vendor: str,
     product: str,
 ) -> dict[str, Any]:
+    usage = await usage_summary(store, run_id)
+
     paused = handle_pause_or_failure(draft_id, result, "submit_tdd")
     if paused is not None:
         response, validation = paused
         log.info("tdd draft %s: %s", draft_id, response["status"])
         await store.update_draft(draft_id, status=response["status"], validation=validation)
-        return response
+        return {**response, "usage": usage}
 
     markdown = (result.payload or {}).get("markdown", "").strip()
     findings = check_tdd_structure(markdown, components)
@@ -230,7 +251,7 @@ async def _finish(
     log.info("tdd draft %s -> %s", draft_id, status)
 
     return {"draft_id": draft_id, "status": status, "summary": summary,
-            "validation": validation}
+            "validation": validation, "usage": usage}
 
 
 def check_tdd_structure(markdown: str, components: list[str]) -> list[dict[str, Any]]:
