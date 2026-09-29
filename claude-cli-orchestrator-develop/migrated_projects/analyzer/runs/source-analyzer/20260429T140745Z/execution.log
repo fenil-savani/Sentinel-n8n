@@ -1,0 +1,25 @@
+[2026-04-29T14:07:45.370568+00:00] [RUN]
+[2026-04-29T14:07:45.371420+00:00] [RUN] ==============================================================================
+[2026-04-29T14:07:45.371886+00:00] [RUN] >> WORKFLOW START  |  source-analyzer  |  claude-haiku-4-5-20251001
+[2026-04-29T14:07:45.372374+00:00] [RUN]   run_id  : 20260429T140745Z
+[2026-04-29T14:07:45.372857+00:00] [RUN]   run_dir : C:\splunk_secops_migration\agentic_arc_1\agentic-migration-tool\migrated_projects\analyzer\runs\source-analyzer\20260429T140745Z
+[2026-04-29T14:07:45.373411+00:00] [RUN]   input   : 22 keys -- source_platform, destination_platform, migration_type, destination_metadata, summary, intent, use_case, parsed_json ...
+[2026-04-29T14:07:45.374159+00:00] [RUN] ==============================================================================
+[2026-04-29T14:07:45.374456+00:00] [RUN]
+[2026-04-29T14:07:45.375659+00:00] [RUN] >> [analyzer] STARTING
+[2026-04-29T14:07:45.375959+00:00] [RUN]   mode    : auto-chain  |  payload: 23 keys
+[2026-04-29T14:07:45.376237+00:00] [RUN]   tools   : Read, Grep, Bash, Skill, mcp__context-engine__context_engine_agent
+[2026-04-29T14:07:45.376702+00:00] [RUN]   input   : {"source_platform": "splunk", "destination_platform": "google_secops", "migration_type": "query", "destination_metadata": {"log_type": "WINDOWS_SECURITY", "project_id": "my-gcp-project", "customer_id": "acme-corp"}, "summary": "Counts failed Windows login attempts per source IP over a 1-hour sliding window and alerts when the count exceeds 10, grouped by source IP address.", "intent": "Detect brute-force login attacks against Windows hosts by identifying source IPs generating an unusually high n...
+[2026-04-29T14:07:45.376931+00:00] [RUN]
+[2026-04-29T14:09:34.908791+00:00] [RUN] [OK] [analyzer] COMPLETE  turns=3  cost=$0.0409  in=12  out=1351  cache_r=42759  elapsed=109.5s
+[2026-04-29T14:09:34.909273+00:00] [RUN]   output_keys : ['id', 'query', 'parsed_json', 'fields', 'commands', 'functions', 'metadata', 'usage_type', 'datasource', 'summary', 'intent', 'use_case']
+[2026-04-29T14:09:34.909654+00:00] [RUN]   output      : {"id": "test-workflow-001", "query": "index=wineventlog EventCode=4625 sourcetype=WinEventLog:Security | stats count by src_ip | where count > 10", "parsed_json": {"base_search": {"index": "wineventlog", "criteria": [{"field": "EventCode", "operator": "=", "value": "4625"}, {"field": "sourcetype", "operator": "=", "value": "WinEventLog:Security"}]}, "pipeline": [{"command": "stats", "arguments": {"function": "count", "by": ["src_ip"]}}, {"command": "where", "arguments": {"condition": "count > 10...
+[2026-04-29T14:09:34.909913+00:00] [RUN]   skills      : (none matched)
+[2026-04-29T14:09:34.910173+00:00] [RUN]   tool_calls  : 2 calls -- Skill, mcp__context-engine__context_engine_agent
+[2026-04-29T14:09:34.910576+00:00] [RUN]
+[2026-04-29T14:09:34.911699+00:00] [RUN] ==============================================================================
+[2026-04-29T14:09:34.912088+00:00] [RUN] >> WORKFLOW COMPLETE  |  PASS [OK]  |  iterations=1  cost=$0.0409  elapsed=109.5s
+[2026-04-29T14:09:34.912433+00:00] [RUN]   tokens  : in=12  out=1351  turns=3
+[2026-04-29T14:09:34.912861+00:00] [RUN]   report  : C:\splunk_secops_migration\agentic_arc_1\agentic-migration-tool\migrated_projects\analyzer\runs\source-analyzer\20260429T140745Z\execution_report.json
+[2026-04-29T14:09:34.913219+00:00] [RUN] ==============================================================================
+[2026-04-29T14:09:34.913659+00:00] [RUN]

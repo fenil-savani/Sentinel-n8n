@@ -38,7 +38,7 @@ az ad sp create-for-rbac --name "sentinel-n8n-query" \
 ## 2. Grant the remaining roles to the deploy principal
 
 `Log Analytics Contributor` covers `savedSearches` (parsers) but **not**
-workbooks, which live under a different resource provider.
+workbooks or analytic rules, which live under different resource providers.
 
 ```bash
 DEPLOY_APP_ID=<appId from step 1>
@@ -47,12 +47,21 @@ DEPLOY_APP_ID=<appId from step 1>
 az role assignment create --assignee "$DEPLOY_APP_ID" \
   --role "Monitoring Contributor" \
   --scope "/subscriptions/$SUB/resourceGroups/$RG"
+
+# Analytic rules: Microsoft.SecurityInsights/alertRules
+az role assignment create --assignee "$DEPLOY_APP_ID" \
+  --role "Microsoft Sentinel Contributor" \
+  --scope "/subscriptions/$SUB/resourceGroups/$RG"
 ```
 
-| Resource | Provider | Role that grants write |
-|---|---|---|
-| Parser (`savedSearches`) | `Microsoft.OperationalInsights` | Log Analytics Contributor |
-| Workbook | `Microsoft.Insights` | Monitoring Contributor |
+| Resource | `resource_type` | Provider | Role that grants write |
+|---|---|---|---|
+| Parser | `savedSearch` | `Microsoft.OperationalInsights` | Log Analytics Contributor |
+| Workbook | `workbook` | `Microsoft.Insights` | Monitoring Contributor |
+| Analytic rule | `alertRule` | `Microsoft.SecurityInsights` | Microsoft Sentinel Contributor |
+
+A missing role produces a clean `403` naming the role, not `HTTP 0` — see
+Troubleshooting below.
 
 ## 3. Fill in `.env`
 
@@ -90,6 +99,26 @@ ones at start to build ARM resource ids.
 
 n8n does not read secrets from `.env`; they go in its encrypted credential
 store. In the n8n UI, **Credentials → Add credential**:
+
+> **Why this can't just be `.env`.** `docker-compose.yml` only passes the
+> *non-secret* Azure values (`AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`,
+> `AZURE_WORKSPACE_NAME`, `AZURE_LOCATION`) into the `n8n` container as plain
+> env vars — those are just used to build the ARM resource path string, no
+> auth involved. `AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET` are deliberately
+> **not** passed through. The `GET Current Resource` and `PUT to Azure` nodes
+> in *Sentinel — Deploy Component* authenticate via an n8n **OAuth2
+> credential** object, not a Code node reading `$env`, so that: the secret is
+> encrypted at rest by n8n's own instance key (never plaintext in `.env` or a
+> container's env list); n8n handles the client-credentials token fetch and
+> refresh automatically; and the workflow JSON — freely imported, exported,
+> and committed to git — only ever carries a *reference* to the credential's
+> id, never the secret itself. This is also why an exported workflow moved to
+> a new VM always needs this step redone: the credential store is scoped to
+> that n8n instance's own encryption key, and a fresh instance's store starts
+> empty regardless of what's already in `.env`. A missing or unlinked
+> credential fails **before n8n opens a socket** — no HTTP status is ever
+> returned, which is why this specific misconfiguration shows up in chat as
+> `HTTP 0`, not a real Azure error code.
 
 ### `Azure Management (client credentials)` — type **OAuth2 API**
 
@@ -200,8 +229,10 @@ validation is live rather than skipped.
 
 | Symptom | Cause |
 |---|---|
+| Deploy fails with `HTTP 0` (chat shows `GET before deploy failed with HTTP 0. undefined`, or the newer message naming this explicitly) | No HTTP response was ever received — a transport/credential problem, not an Azure rejection. Almost always: the `Azure Management (client credentials)` credential (§4) doesn't exist yet on this n8n instance, or exists but isn't attached to **both** `GET Current Resource` and `PUT to Azure` in *Sentinel — Deploy Component*. n8n resolves the credential before opening a socket, so a missing one never reaches Azure at all. Re-check §4, including after any workflow re-import (imports reset credential links). |
 | `401` on the query API, `200` on management | Token minted with the management scope. They are different audiences — mint two. |
 | `403` on a workbook PUT, parsers fine | `Log Analytics Contributor` does not cover `Microsoft.Insights`. Add **Monitoring Contributor**. |
+| `403` on an analytic rule PUT, parsers/workbooks fine | Neither `Log Analytics Contributor` nor `Monitoring Contributor` covers `Microsoft.SecurityInsights`. Add **Microsoft Sentinel Contributor** (§2). |
 | `"incorrect segment lengths"` | An ARM-template naming bug. It cannot occur on the direct PUT path used here — if you see it, something is deploying via an ARM template. |
 | `409 Conflict` on deploy | The resource changed between the GET and the PUT. Run `deploy_draft` again; do not force. |
 | `"azure_configured": false` | `AZURE_TENANT_ID`, `AZURE_WORKSPACE_ID`, or the query credentials are unset. Restart the sidecar after editing `.env`. |

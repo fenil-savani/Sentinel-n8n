@@ -33,13 +33,35 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/sentinel
       PROMPTS_DIR: /prompts
       REFERENCE_DIR: /reference
+      OUTPUT_DIR: /output
+      TDD_KIT_DIR: /tdd_kit
     volumes:
       # The two skill files are the single source of truth for humans and for
       # the sidecar. Mounted read-only, read at request time — edit them and the
       # next generation picks the change up without a rebuild.
-      - ./skills/generate-sentinel-parser.md:/prompts/generate-sentinel-parser.md:ro
-      - ./skills/generate-sentinel-workbook.md:/prompts/generate-sentinel-workbook.md:ro
-      - ./data:/reference:ro
+      - ./skills/generate-sentinel-parser/SKILL.md:/prompts/generate-sentinel-parser.md:ro
+      - ./skills/generate-sentinel-workbook/SKILL.md:/prompts/generate-sentinel-workbook.md:ro
+      - ./skills/generate-sentinel-analytic-rule/SKILL.md:/prompts/generate-sentinel-analytic-rule.md:ro
+      - ./skills/generate-sentinel-tdd/SKILL.md:/prompts/generate-sentinel-tdd.md:ro
+      - ./skills/generate-sentinel-ccf-connector/SKILL.md:/prompts/generate-sentinel-ccf-connector.md:ro
+      # The same skill's scripts/ (md_to_docx.py) and templates/ (.drawio
+      # diagrams) — driven deterministically by app/generators/tdd_docx.py
+      # once a TDD draft's markdown validates, since the tool-calling agent
+      # has no shell access to run the converter itself.
+      - ./skills/generate-sentinel-tdd/scripts:/tdd_kit/scripts:ro
+      - ./skills/generate-sentinel-tdd/templates:/tdd_kit/templates:ro
+      # Reference example artifacts the model reads via read_reference/
+      # list_reference_files (ReferenceFiles walks the whole tree, so nested
+      # per-skill folders show up as e.g. "parser/corelight_conn.yaml"). Each
+      # skill now owns its own examples instead of a shared top-level data/
+      # folder — mount one subpath per skill that has any.
+      - ./skills/generate-sentinel-parser/reference:/reference/parser:ro
+      - ./skills/generate-sentinel-workbook/reference:/reference/workbook:ro
+      - ./skills/generate-sentinel-ccf-connector/reference:/reference/ccf_connector:ro
+      # Where generated artifacts land for the analyst to read directly —
+      # laid out like a real Azure-Sentinel solution repo. Read-write,
+      # unlike the skill/reference mounts above.
+      - ./output:/output
     depends_on:
       postgres:
         condition: service_healthy
@@ -76,6 +98,12 @@ services:
       EXECUTIONS_TIMEOUT_MAX: 7200
       N8N_DIAGNOSTICS_ENABLED: "false"
       N8N_RUNNERS_ENABLED: "true"
+      # Code nodes (the deploy workflow's "Build Azure Request") read the
+      # AZURE_* vars below via $env. With task runners enabled, n8n blocks
+      # $env access by default and throws "access to env vars denied" — so
+      # allow it explicitly. Secrets are NOT among these (they live in the
+      # n8n credential store), so exposing this set to the sandbox is safe.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
       # The deploy workflow derives a workbook's stable GUID with sha1, the
       # same way uuid5 does, so redeploys update in place instead of creating
       # a new resource each time.

@@ -22,16 +22,19 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterable
 
 from ..azure.logs import LogsClient
 from ..config import Settings
 from ..lint.rules import lint_workbook
-from ..llm.base import AgentRuntime, LLMUnavailable
+from ..llm.base import AgentRuntime, LLMUnavailable, UsageCallback
+from ..output import write_artifact
 from ..prompts import workbook_manifest_system, workbook_panel_system
-from ..store import Store
+from ..store import Store, new_id
 from ..tools import Toolbox
 from ..workbook import panel_templates as T
+from ._shared import provider_name, usage_recorder, usage_summary
 
 log = logging.getLogger(__name__)
 
@@ -48,13 +51,49 @@ class WorkbookRequest:
     parser_fields: list[str] = field(default_factory=list)
     tabs: list[str] = field(default_factory=list)
     notes: str | None = None
+    solution: str | None = None
     session_id: str | None = None
+    #: Additional parsers, for a workbook spanning more than one log type/table.
+    #: `parser` above stays the primary/default; every entry here plus `parser`
+    #: itself is a valid per-panel choice. Empty (the common case) means every
+    #: panel implicitly uses `parser` — fully backward compatible.
+    parsers: list[str] = field(default_factory=list)
 
-    def to_prompt(self) -> str:
+    @property
+    def all_parsers(self) -> list[str]:
+        seen: list[str] = []
+        for p in (self.parser, *self.parsers):
+            if p and p not in seen:
+                seen.append(p)
+        return seen
+
+    def to_prompt(self, available_tools: Iterable[str], reference_dir: Path) -> str:
+        # See ParserRequest.to_prompt: not every runtime offers
+        # read_reference/run_python (e.g. ClaudeCliRuntime has neither), and
+        # the CLI's native Read tool needs the real absolute path since
+        # --add-dir doesn't make a bare filename discoverable.
+        names = set(available_tools)
+        has_read_reference = "read_reference" in names
+        has_run_python = "run_python" in names
+        read_hint = "read_reference" if has_read_reference else "the Read tool"
+        inspect_hint = "run_python" if has_run_python else "the Read tool"
+
         lines = [
             f"Plan a Microsoft Sentinel workbook in **{self.mode}** mode.",
             "",
-            f"- Parser to query: {self.parser}",
+        ]
+        if self.parsers:
+            all_parsers = self.all_parsers
+            lines.append(f"- Parsers in scope ({len(all_parsers)}): {', '.join(all_parsers)}")
+            lines.append(
+                "  This workbook spans multiple parsers — every panel in your plan MUST set "
+                "its own \"parser\" field to exactly one of the names above. Use one tab per "
+                "parser as the data-type switcher, and skip the Step 4 per-dimension "
+                "multiselect filters entirely (see SKILL.md's Multi-parser workbooks note)."
+            )
+        else:
+            lines.append(f"- Parser to query: {self.parser}")
+        lines += [
             f"- Product: {self.product}",
             f"- Topic: {self.topic}",
         ]
@@ -68,9 +107,11 @@ class WorkbookRequest:
         if self.tabs:
             lines.append(f"- Tabs: {', '.join(self.tabs)}")
         if self.reference_ref:
+            ref_path = self.reference_ref if has_read_reference \
+                else str(reference_dir / self.reference_ref)
             lines.append(
-                f"- Reference dashboard: {self.reference_ref} "
-                "(read it with read_reference, or inspect it with run_python if large)"
+                f"- Reference dashboard: {ref_path} "
+                f"(read it with {read_hint}, or inspect it with {inspect_hint} if large)"
             )
         if self.source_dashboard:
             lines += [
@@ -101,37 +142,68 @@ async def generate_workbook(
         name=f"{request.product} {request.topic}",
         session_id=request.session_id,
     )
+    # One run_id covers both the manifest-stage call and every panel-stage
+    # call below — a single /generate/workbook request is one "run" even
+    # though it's several dozen LLM calls under the hood.
+    run_id = new_id("run")
+    manifest_on_call = usage_recorder(
+        store=store, run_id=run_id, draft_id=draft_id, session_id=request.session_id,
+        provider=provider_name(runtime), call_site="workbook_manifest",
+    )
+    panel_on_call = usage_recorder(
+        store=store, run_id=run_id, draft_id=draft_id, session_id=request.session_id,
+        provider=provider_name(panel_runtime), call_site="workbook_panel",
+    )
     toolbox = Toolbox(settings, logs)
+    manifest_tools = toolbox.manifest_tools()
+    available = runtime.supported_tool_names(manifest_tools)
 
     # ── stage 1: manifest ────────────────────────────────────────────────
+    log.info(
+        "workbook draft %s: starting manifest | provider=%s model=%s product=%s topic=%s mode=%s",
+        draft_id, type(runtime).__name__, settings.llm_model_workbook_manifest,
+        request.product, request.topic, request.mode,
+    )
     try:
         plan = await runtime.run(
-            system=workbook_manifest_system(settings.prompts_dir),
-            user=request.to_prompt(),
-            tools=toolbox.manifest_tools(),
-            model=settings.llm_model,
+            system=workbook_manifest_system(settings.prompts_dir, available),
+            user=request.to_prompt(available, settings.reference_dir),
+            tools=manifest_tools,
+            model=settings.llm_model_workbook_manifest,
+            on_call=manifest_on_call,
         )
-    except LLMUnavailable:
+    except LLMUnavailable as exc:
+        log.warning(
+            "workbook draft %s: LLM unavailable at manifest stage | provider=%s model=%s error=%s",
+            draft_id, type(runtime).__name__, settings.llm_model_workbook_manifest, exc,
+        )
         await store.update_draft(draft_id, status="failed",
                                  validation={"error": "llm_unavailable", "stage": "manifest"})
         raise
 
     if plan.terminal_tool == "request_input":
         payload = plan.payload or {}
+        log.info("workbook draft %s: needs_input at manifest stage", draft_id)
         await store.update_draft(draft_id, status="needs_input",
                                  validation={"needs_input": payload, "stage": "manifest"})
         return {"draft_id": draft_id, "status": "needs_input",
                 "missing": payload.get("missing", []),
-                "question": payload.get("question", "")}
+                "question": payload.get("question", ""),
+                "usage": await usage_summary(store, run_id)}
 
     if plan.terminal_tool != "submit_manifest":
+        log.warning(
+            "workbook draft %s: no_manifest | terminal_tool=%s text=%s",
+            draft_id, plan.terminal_tool, plan.text[:300],
+        )
         await store.update_draft(
             draft_id, status="failed",
             validation={"error": "no_manifest", "stage": "manifest",
                         "text": plan.text[:2000]},
         )
         return {"draft_id": draft_id, "status": "failed",
-                "error": "The model finished without submitting a panel plan."}
+                "error": "The model finished without submitting a panel plan.",
+                "usage": await usage_summary(store, run_id)}
 
     manifest = plan.payload or {}
     specs: list[dict[str, Any]] = manifest.get("panels") or []
@@ -139,10 +211,46 @@ async def generate_workbook(
         await store.update_draft(draft_id, status="failed",
                                  validation={"error": "empty_manifest"})
         return {"draft_id": draft_id, "status": "failed",
-                "error": "The panel plan came back empty."}
+                "error": "The panel plan came back empty.",
+                "usage": await usage_summary(store, run_id)}
+
+    if request.parsers:
+        # Multi-parser mode: every panel must name a valid parser explicitly.
+        # Checked here, right after the manifest, rather than left to silently
+        # default — a wrong-but-unnoticed default is exactly the defect this
+        # feature exists to eliminate, and there is no later retry point that
+        # can fix a manifest-stage omission (the panel-writing stage only
+        # writes KQL, it doesn't re-choose which parser it's for).
+        bad = [
+            s.get("id") or s.get("title") or "<unnamed>"
+            for s in specs
+            if (s.get("parser") or "").strip() not in request.all_parsers
+        ]
+        if bad:
+            await store.update_draft(
+                draft_id, status="failed",
+                validation={"error": "missing_panel_parser", "stage": "manifest",
+                            "panels": bad, "valid_parsers": request.all_parsers},
+            )
+            return {
+                "draft_id": draft_id, "status": "failed",
+                "error": (
+                    f"{len(bad)} panel(s) did not name a valid parser from "
+                    f"{request.all_parsers}: {bad}. Regenerate with an explicit "
+                    "\"parser\" field on every panel."
+                ),
+                "usage": await usage_summary(store, run_id),
+            }
 
     title = manifest.get("title") or f"{request.product} {request.topic}"
-    parameters = _normalise_parameters(manifest.get("parameters"), request.parser)
+    # Multi-parser mode: dimension filters assume one shared schema (SKILL.md's
+    # Multi-parser workbooks note tells the model to skip them, but this is the
+    # Python-enforced guarantee — a filter field that doesn't exist on every
+    # parser is exactly the defect class that motivated per-panel parsers).
+    parameters = (
+        [] if request.parsers
+        else _normalise_parameters(manifest.get("parameters"), request.parser)
+    )
 
     await store.update_draft(
         draft_id, name=title,
@@ -159,6 +267,7 @@ async def generate_workbook(
         settings=settings,
         toolbox=toolbox,
         logs=logs,
+        on_call=panel_on_call,
     )
     built = [r for r in results if r.get("ok")]
     failures = [
@@ -174,7 +283,7 @@ async def generate_workbook(
         )
         return {"draft_id": draft_id, "status": "failed",
                 "error": f"All {len(specs)} panels failed to generate.",
-                "failures": failures}
+                "failures": failures, "usage": await usage_summary(store, run_id)}
 
     # ── stage 3: assemble ────────────────────────────────────────────────
     workbook = _assemble(
@@ -182,7 +291,7 @@ async def generate_workbook(
     )
     artifact = json.dumps(workbook, indent=2)
 
-    lint_ok, findings = lint_workbook(workbook, parser=request.parser)
+    lint_ok, findings = lint_workbook(workbook, parser=request.all_parsers)
     validation = {
         "lint": "pass" if lint_ok else "fail",
         "findings": [f.as_dict() for f in findings],
@@ -194,6 +303,7 @@ async def generate_workbook(
     summary = {
         "title": title,
         "parser": request.parser,
+        "parsers": request.all_parsers,
         "panel_count": len(built),
         "planned": len(specs),
         "failed_panels": len(failures),
@@ -203,6 +313,16 @@ async def generate_workbook(
         "warnings": sum(1 for f in findings if f.severity == "warn"),
     }
 
+    if status == "validated":
+        try:
+            summary["file"] = write_artifact(
+                settings.output_dir, solution=request.solution or request.product,
+                kind="workbook", name=title, content=artifact,
+            )
+        except OSError as exc:
+            log.warning("workbook draft %s: could not write output file: %s", draft_id, exc)
+            summary["file_error"] = str(exc)
+
     await store.update_draft(
         draft_id, status=status, name=title, artifact=artifact,
         summary=summary, validation=validation, failures=failures,
@@ -211,7 +331,8 @@ async def generate_workbook(
              draft_id, status, len(built), len(specs))
 
     return {"draft_id": draft_id, "status": status, "summary": summary,
-            "validation": validation, "failures": failures}
+            "validation": validation, "failures": failures,
+            "usage": await usage_summary(store, run_id)}
 
 
 # ── stage 2 helpers ─────────────────────────────────────────────────────────
@@ -225,9 +346,10 @@ async def _generate_panels(
     settings: Settings,
     toolbox: Toolbox,
     logs: LogsClient | None,
+    on_call: UsageCallback | None = None,
 ) -> list[dict[str, Any]]:
-    system = workbook_panel_system(settings.prompts_dir)
     tools = toolbox.panel_tools()
+    system = workbook_panel_system(settings.prompts_dir, panel_runtime.supported_tool_names(tools))
     semaphore = asyncio.Semaphore(max(1, settings.panel_concurrency))
 
     async def one(spec: dict[str, Any]) -> dict[str, Any]:
@@ -235,6 +357,7 @@ async def _generate_panels(
             return await _generate_panel(
                 spec, request=request, parameters=parameters, system=system,
                 tools=tools, panel_runtime=panel_runtime, settings=settings, logs=logs,
+                on_call=on_call,
             )
 
     # return_exceptions so one unexpected error cannot void the whole run.
@@ -260,10 +383,12 @@ async def _generate_panel(
     panel_runtime: AgentRuntime,
     settings: Settings,
     logs: LogsClient | None,
+    on_call: UsageCallback | None = None,
 ) -> dict[str, Any]:
     panel_id = str(spec.get("id") or spec.get("title") or "panel")
     viz = spec.get("viz_type") or "grid"
-    base_prompt = _panel_prompt(spec, request, parameters)
+    panel_parser = (spec.get("parser") or "").strip() or request.parser
+    base_prompt = _panel_prompt(spec, request, parameters, panel_parser)
     last_error = "unknown"
 
     for attempt in range(1, settings.panel_max_retries + 1):
@@ -277,6 +402,7 @@ async def _generate_panel(
             result = await panel_runtime.run(
                 system=system, user=prompt, tools=tools,
                 model=settings.llm_model_panel, max_iterations=8,
+                on_call=on_call,
             )
         except LLMUnavailable as exc:
             # Backend trouble is usually transient; keep the remaining attempts.
@@ -285,16 +411,18 @@ async def _generate_panel(
             continue
 
         if result.terminal_tool != "submit_panel":
-            last_error = "did not call submit_panel"
+            last_error = f"did not call submit_panel (tool_trace={result.tool_trace})"
+            log.warning("panel %s attempt %d: %s", panel_id, attempt, last_error)
             continue
 
         payload = result.payload or {}
         body = (payload.get("kql") or "").strip()
         if not body:
             last_error = "submitted an empty query"
+            log.warning("panel %s attempt %d: %s", panel_id, attempt, last_error)
             continue
 
-        query = T.compose_query(request.parser, body, parameters)
+        query = T.compose_query(panel_parser, body, parameters)
 
         if settings.validate_panel_queries and logs is not None:
             probe = await logs.query(T.substitute_parameters(query, parameters))
@@ -308,6 +436,7 @@ async def _generate_panel(
             "id": panel_id,
             "title": payload.get("title") or spec.get("title") or panel_id,
             "viz": viz,
+            "parser": panel_parser,
             "query": query,
             "columns": payload.get("columns") or [],
             "value_column": payload.get("value_column"),
@@ -320,12 +449,13 @@ async def _generate_panel(
 
 
 def _panel_prompt(
-    spec: dict[str, Any], request: WorkbookRequest, parameters: list[dict[str, Any]]
+    spec: dict[str, Any], request: WorkbookRequest, parameters: list[dict[str, Any]],
+    panel_parser: str,
 ) -> str:
     lines = [
         "Write the KQL for this single panel.",
         "",
-        f"- Parser (base table): {request.parser}",
+        f"- Parser (base table): {panel_parser}",
         f"- Panel title: {spec.get('title')}",
         f"- Panel id: {spec.get('id')}",
         f"- Visualisation: {spec.get('viz_type')}",
@@ -333,7 +463,7 @@ def _panel_prompt(
     ]
     if spec.get("fields"):
         lines.append(f"- Fields to use: {', '.join(spec['fields'])}")
-    if request.parser_fields:
+    if request.parser_fields and not request.parsers:
         lines.append(f"- Fields available on the parser: {', '.join(request.parser_fields)}")
     if parameters:
         names = ", ".join(f"{{{p['name']}}}" for p in parameters)
@@ -419,12 +549,21 @@ def _assemble(
         ]
         body.append(T.group_item(group_title, items, tab=tab))
 
+    # `groups` was built by iterating `panels` in manifest order, so its keys
+    # already reflect first-appearance order — the tab *selector* item must
+    # list every tab the manifest actually used, not just ones the caller
+    # pre-declared via request.tabs, or a manifest-only tab's panels get a
+    # conditionalVisibility that no link ever sets the "Tab" parameter to,
+    # and silently never render.
+    discovered_tabs = list(dict.fromkeys(tab for (tab, _group) in groups.keys() if tab))
+    tabs = request.tabs or discovered_tabs or None
+
     return T.build_workbook(
         title=title,
-        parser=request.parser,
+        parser=", ".join(request.all_parsers) if request.parsers else request.parser,
         product=request.product,
         topic=request.topic,
         parameters=param_items,
         body_items=body,
-        tabs=request.tabs or None,
+        tabs=tabs,
     )

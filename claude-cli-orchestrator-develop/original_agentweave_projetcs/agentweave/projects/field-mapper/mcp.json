@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "splunk-mcp-server": {
+      "type": "http",
+      "url": "http://10.5.50.275:8081/mcp"
+    },
+    "google-secops-mcp-server": {
+      "type": "sse",
+      "url": "http://10.50.12.43:8000/sse"
+    }
+  }
+}

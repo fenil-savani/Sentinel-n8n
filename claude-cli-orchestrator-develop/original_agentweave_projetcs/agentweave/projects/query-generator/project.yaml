@@ -1,0 +1,36 @@
+# =============================================================================
+# Destination Query Generator
+# =============================================================================
+# Generated on 2026-04-01 10:51:00
+#
+# STRUCTURE:
+# - agents/*.md have CORE (framework) and PROJECT (domain) sections
+# - product_docs/ contains platform knowledge documentation (.md files)
+# =============================================================================
+
+name: destination-query-generator
+display_name: "Destination Query Generator"
+description: "Multi-stage, LLM-orchestrated pipeline that converts normalized source queries into syntactically and semantically correct destination platform queries through generation and validation phases."
+core_instructions: false  # Framework core instructions are enabled; set to false to use only project agent prompts
+
+repository:
+  url: "https://gitlab.cdsys.local/agentic-ai-migration-tool/agentic-migration-tool"
+  branch: "destination-query-generator-agent"
+  local_path: "./repos/destination-query-generator"
+
+supervisor:
+  prompt_file: supervisor.md
+  model: haiku
+
+subagents:
+  - name: generator
+    prompt_file: generator.md
+    description: "Expert query migration engineer that translates normalized source queries into destination platform queries using product_docs knowledge files, field mappings, and platform-specific syntax rules"
+    model: haiku
+    tools: [Read, Grep, mcp__context-engine__context_engine_agent]
+
+  - name: reviewer
+    prompt_file: reviewer.md
+    description: "Query validation expert that runs 5 independent validators (V1-V5) to verify intent coverage, field mapping completeness, structural conformance, and syntax correctness via MCP tools"
+    model: haiku
+    tools: [Read, Grep, mcp__google-secops-mcp-server__validate_dashboard_query, mcp__google-secops-mcp-server__validate_rule]

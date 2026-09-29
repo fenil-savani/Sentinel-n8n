@@ -15,7 +15,17 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
+
+from .pricing import Usage
+
+#: Invoked once per underlying LLM call (not once per run — a run can be many
+#: iterations of a tool loop, or one subprocess call that internally multi-
+#: turns). Receives (usage for this call, model, iteration index, latency in
+#: ms). Lets a generator persist a per-call usage row without `AgentRuntime`
+#: itself knowing anything about the Store — the callback is supplied by
+#: whoever owns the DB connection.
+UsageCallback = Callable[[Usage, str, int, int | None], Awaitable[None]]
 
 
 class LLMUnavailable(RuntimeError):
@@ -52,6 +62,11 @@ class RunResult:
     #: Names of non-terminal tools called, in order. Useful for debugging a
     #: model that never reads the reference file it was told to read.
     tool_trace: list[str] = field(default_factory=list)
+    #: Summed across every underlying LLM call in this run. The authoritative
+    #: total for billing purposes is `on_call`'s persisted rows (queried back
+    #: via Store.usage_totals_for_run), not this field — this is a convenience
+    #: for logging/debugging and survives even if a DB write in `on_call` fails.
+    usage: Usage = field(default_factory=Usage)
 
 
 class AgentRuntime(ABC):
@@ -66,10 +81,23 @@ class AgentRuntime(ABC):
         tools: list[Tool],
         model: str,
         max_iterations: int = 24,
+        on_call: UsageCallback | None = None,
     ) -> RunResult: ...
 
     @abstractmethod
     async def aclose(self) -> None: ...
+
+    def supported_tool_names(self, tools: list[Tool]) -> list[str]:
+        """Names of `tools` this runtime can actually expose to the model.
+
+        Used to build a harness prompt that doesn't claim capabilities the
+        runtime doesn't have (see prompts.py's ``harness()``). A runtime that
+        executes every tool it's given (e.g. AnthropicRuntime) just returns
+        every name; one that can't act on non-terminal Python tools (e.g.
+        ClaudeCliRuntime, whose CLI subprocess owns its own tool loop)
+        overrides this to report only the subset it truly supports.
+        """
+        return [t.name for t in tools]
 
     # ── shared helpers ───────────────────────────────────────────────────
 

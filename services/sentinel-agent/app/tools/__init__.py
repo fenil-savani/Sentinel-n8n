@@ -130,6 +130,54 @@ class Toolbox:
             fn=_query,
         )
 
+    def _get_table_schema(self) -> Tool:
+        async def _schema(table: str) -> str:
+            if self._logs is None:
+                return (
+                    "SKIPPED: no Log Analytics credentials configured, so the schema "
+                    "could not be fetched. Ask the analyst for the field list or sample "
+                    "data instead."
+                )
+            result = await self._logs.query(f"{table} | getschema | project ColumnName, ColumnType")
+            if not result.ok:
+                if result.error_kind == "missing_table":
+                    return (
+                        f"ERROR (missing table): {result.error}\n"
+                        "The table name is wrong, or it hasn't been created yet. "
+                        "getschema does not need any rows to have been ingested, but the "
+                        "table object itself must exist (created via its DCR, or by a "
+                        "first legacy ingest for an HTTP Data Collector API table)."
+                    )
+                return f"ERROR ({result.error_kind}): {result.error}"
+            if not result.rows:
+                return f"OK: '{table}' exists but getschema returned no columns."
+            lines = [f"{r.get('ColumnName')}: {r.get('ColumnType')}" for r in result.rows]
+            return f"OK: {len(lines)} column(s) in '{table}':\n" + "\n".join(lines)
+
+        return Tool(
+            name="get_table_schema",
+            description=(
+                "Fetch the real column list and types for a table that already exists in "
+                "the configured Sentinel/Log Analytics workspace, via "
+                "'<table> | getschema'. Call this FIRST when the analyst names an "
+                "existing table instead of pasting sample data, a schema, or a spec — "
+                "it's ground truth and saves them from typing out a field list by hand. "
+                "Works even if the table has zero rows so far, as long as it's been "
+                "created."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "table": {
+                        "type": "string",
+                        "description": "Exact table name, e.g. 'Corelight_v2_conn_CL'.",
+                    }
+                },
+                "required": ["table"],
+            },
+            fn=_schema,
+        )
+
     def _request_input(self) -> Tool:
         return Tool(
             name="request_input",
@@ -152,7 +200,7 @@ class Toolbox:
                         "description": "One clear question to put to the analyst.",
                     },
                 },
-                "required": ["missing", "question"],
+                "required": ["question"],
             },
             terminal=True,
         )
@@ -186,6 +234,68 @@ class Toolbox:
             self._read_reference(),
             self._run_python(),
             self._run_kql(),
+            self._get_table_schema(),
+            self._request_input(),
+            submit,
+        ]
+
+    def analytic_rule_tools(self) -> list[Tool]:
+        submit = Tool(
+            name="submit_analytic_rule",
+            description=(
+                "Submit the finished analytic rule. Pass the COMPLETE YAML file content — "
+                "id, name, description, severity, requiredDataConnectors, queryFrequency, "
+                "queryPeriod, triggerOperator, triggerThreshold, tactics, techniques, query, "
+                "entityMappings, version, kind — with no markdown fences and no commentary. "
+                "Call this exactly once, after you have validated the query with run_kql."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "yaml": {"type": "string", "description": "Complete YAML document."},
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional caveats for the analyst.",
+                    },
+                },
+                "required": ["yaml"],
+            },
+            terminal=True,
+        )
+        return [
+            self._list_reference(),
+            self._read_reference(),
+            self._run_python(),
+            self._run_kql(),
+            self._request_input(),
+            submit,
+        ]
+
+    def tdd_tools(self) -> list[Tool]:
+        submit = Tool(
+            name="submit_tdd",
+            description=(
+                "Submit the finished Technical Design Document. Pass the COMPLETE markdown "
+                "document — no markdown fences around the whole thing, no commentary before or "
+                "after. Call this exactly once."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "markdown": {"type": "string", "description": "Complete TDD markdown document."},
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional caveats for the analyst (e.g. which sections are <TBD>).",
+                    },
+                },
+                "required": ["markdown"],
+            },
+            terminal=True,
+        )
+        return [
+            self._list_reference(),
+            self._read_reference(),
+            self._run_python(),
             self._request_input(),
             submit,
         ]
@@ -210,6 +320,12 @@ class Toolbox:
                             "properties": {
                                 "id": {"type": "string"},
                                 "title": {"type": "string"},
+                                "parser": {
+                                    "type": "string",
+                                    "description": "Only when multiple parsers are in scope: "
+                                                   "which one this panel queries. Omit in "
+                                                   "single-parser mode.",
+                                },
                                 "viz_type": {"type": "string", "enum": VIZ_TYPES},
                                 "group": {
                                     "type": "string",
@@ -309,3 +425,52 @@ class Toolbox:
             terminal=True,
         )
         return [self._run_kql(), submit]
+
+    def ccf_connector_tools(self) -> list[Tool]:
+        submit = Tool(
+            name="submit_ccf_connector",
+            description=(
+                "Submit the finished CCF v2 connector file set. Pass each file's COMPLETE "
+                "JSON content as its own string field — no markdown fences, no commentary. "
+                "Omit table_json entirely when the data maps to a Microsoft standard table "
+                "(no custom table needed). Call this exactly once, after verifying the "
+                "cross-file mapping chain yourself: ConnectorDefinition id = PollerConfig "
+                "connectorDefinitionName; PollerConfig dcrConfig.streamName = DCR "
+                "streamDeclarations key; DCR outputStream = 'Custom-' + Table name."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "connector_definition_json": {
+                        "type": "string",
+                        "description": "Complete _ConnectorDefinition.json content (a JSON object).",
+                    },
+                    "poller_config_json": {
+                        "type": "string",
+                        "description": "Complete _PollerConfig.json content (a JSON array).",
+                    },
+                    "dcr_json": {
+                        "type": "string",
+                        "description": "Complete _DCR.json content (a JSON array).",
+                    },
+                    "table_json": {
+                        "type": "string",
+                        "description": "Complete _Table.json content (a JSON array). Omit "
+                                       "if the data maps to a standard table.",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional caveats for the analyst.",
+                    },
+                },
+                "required": ["connector_definition_json", "poller_config_json", "dcr_json"],
+            },
+            terminal=True,
+        )
+        return [
+            self._list_reference(),
+            self._read_reference(),
+            self._run_python(),
+            self._request_input(),
+            submit,
+        ]

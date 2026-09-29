@@ -1,0 +1,300 @@
+"""OpenAI chat-completions-compatible proxy, backed by the `claude` CLI.
+
+Lets n8n's own orchestrator chat model run on a Claude Code subscription too,
+not just sentinel-agent's generation calls. n8n's native Anthropic Chat Model
+node has no "point at a local CLI" option, but its OpenAI Chat Model node
+does accept an arbitrary base URL — confirmed by reading n8n's actual
+installed source: LmChatOpenAi.node.js instantiates LangChain's ChatOpenAI,
+which POSTs standard OpenAI request/response shapes to
+`<baseURL>/chat/completions`, with genuine OpenAI tool-calling
+(`tools`/`tool_choice`, `choices[0].message.tool_calls`) and no n8n-specific
+extensions. See app/main.py's /v1/chat/completions for the HTTP side.
+
+Design notes:
+
+* Every step of n8n's own tool-calling loop becomes one `claude --print`
+  subprocess call here — there is no cheaper way to get a single completion
+  out of the CLI. This is slower per turn than a direct Anthropic API call;
+  that trade-off was made deliberately in exchange for not needing an API
+  key for this node. Do not try to "optimize" this into a persistent
+  session — see the module docstring in app/llm/claude_cli.py for why a
+  `--resume`-based loop was already rejected for the generation path, for
+  the same underlying reason (detecting tool intent from free-form
+  multi-turn state is exactly what --json-schema avoids).
+
+* OpenAI's chat-completions API is stateless per call — the full message
+  history arrives on every request. That matches `claude --print`'s
+  one-shot model well: no session/--resume juggling needed, the entire
+  conversation is just serialized into one user-turn transcript each time.
+
+* The response schema is a single flat object with a loose `arguments`
+  object, not a discriminated union of exact per-tool schemas. Two reasons:
+  Anthropic's tool input_schema rejects `oneOf` at the top level (proven
+  live against the API — see claude_cli.py), and the incoming tool set here
+  is arbitrary (whatever n8n's ai_tool-connected nodes are), so a flat
+  merged-properties schema would risk name collisions across unrelated
+  tools. Precision comes from describing each tool's real parameter schema
+  in the system prompt text — the same way tool use normally works — not
+  from JSON Schema validation of the arguments themselves.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import time
+import uuid
+from typing import Any
+
+from ..store import Store, new_id
+from . import cli_exec
+from .claude_cli import usage_from_envelope
+
+log = logging.getLogger(__name__)
+
+_RESPOND = "__respond__"
+
+# The orchestrator agent's system prompt (see n8n/workflows/orchestrator.json)
+# tells the model its literal session id so it can pass it to generate_*/
+# revise_draft tool calls — n8n resolves the `{{ $json.sessionId }}`
+# expression before this request ever arrives, so the real value is sitting
+# in plain text in the system message. Reusing it here rather than plumbing
+# a separate identifier through is what lets orchestrator-chat llm_usage
+# rows join up with the generator-tool rows from the same session.
+_SESSION_ID_RE = re.compile(r"chat session id is exactly `([^`]+)`")
+
+
+def extract_session_id(messages: list[dict[str, Any]]) -> str | None:
+    for m in messages:
+        if m.get("role") == "system":
+            match = _SESSION_ID_RE.search(str(m.get("content") or ""))
+            if match:
+                return match.group(1)
+    return None
+
+
+def build_system_prompt(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> str:
+    system_text = "\n\n".join(
+        str(m.get("content") or "") for m in messages if m.get("role") == "system"
+    )
+
+    catalog_lines = []
+    for t in tools or []:
+        fn = t.get("function") or {}
+        name = fn.get("name", "")
+        if not name:
+            continue
+        description = fn.get("description", "")
+        parameters = fn.get("parameters") or {}
+        catalog_lines.append(f"- `{name}`: {description}\n  Parameters (JSON Schema): {json.dumps(parameters)}")
+    catalog = "\n".join(catalog_lines) if catalog_lines else "(no tools available in this turn)"
+
+    addendum = (
+        "\n\n---\n\n"
+        "# Harness notes (appended — how to respond in this environment)\n\n"
+        "You have no native tool-calling here. Instead, respond via the structured "
+        "output schema you've been given, using these fields:\n\n"
+        f"- `tool`: the name of the tool to call, or `{_RESPOND}` if you're replying to "
+        "the analyst directly instead of calling a tool.\n"
+        "- `arguments`: an object with that tool's arguments, matching its documented "
+        f"parameter schema below. Omit or leave empty when tool is `{_RESPOND}`.\n"
+        "- `content`: your plain-text reply to the analyst. Required when tool is "
+        f"`{_RESPOND}`; optional otherwise.\n\n"
+        f"Available tools:\n{catalog}"
+    )
+    return system_text + addendum
+
+
+def build_transcript(messages: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            continue
+        if role == "user":
+            lines.append(f"User: {m.get('content') or ''}")
+        elif role == "assistant":
+            content = m.get("content")
+            if content:
+                lines.append(f"Assistant: {content}")
+            for tc in m.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                lines.append(f"Assistant called tool `{fn.get('name')}` with arguments: {fn.get('arguments')}")
+        elif role == "tool":
+            lines.append(f"Tool result: {m.get('content') or ''}")
+        elif m.get("content"):
+            lines.append(f"{role}: {m.get('content')}")
+
+    lines.append(
+        "\nRespond now, using the structured output format described in your "
+        "instructions above — pick a `tool` (or `__respond__`) and fill in "
+        "`arguments`/`content` accordingly."
+    )
+    return "\n".join(lines)
+
+
+def build_schema(tools: list[dict[str, Any]]) -> dict[str, Any]:
+    names = [n for t in (tools or []) if (n := (t.get("function") or {}).get("name"))]
+    return {
+        "type": "object",
+        "properties": {
+            "tool": {"type": "string", "enum": [*names, _RESPOND]},
+            "arguments": {
+                "type": "object",
+                "description": "Arguments for the chosen tool, per its documented schema. "
+                               f"Omit when tool is {_RESPOND}.",
+            },
+            "content": {
+                "type": "string",
+                "description": f"Plain text reply to the analyst. Required when tool is {_RESPOND}.",
+            },
+        },
+        "required": ["tool"],
+        "additionalProperties": False,
+    }
+
+
+def to_openai_response(
+    *, payload: dict[str, Any] | None, text: str, model: str, usage: dict[str, int]
+) -> dict[str, Any]:
+    tool_name = payload.get("tool") if isinstance(payload, dict) else None
+
+    if tool_name and tool_name != _RESPOND:
+        arguments = (payload.get("arguments") or {}) if isinstance(payload, dict) else {}
+        message = {
+            "role": "assistant",
+            "content": payload.get("content") if isinstance(payload, dict) else None,
+            "tool_calls": [{
+                "id": f"call_{uuid.uuid4().hex[:24]}",
+                "type": "function",
+                "function": {"name": tool_name, "arguments": json.dumps(arguments)},
+            }],
+        }
+        finish_reason = "tool_calls"
+    else:
+        content = payload.get("content") if isinstance(payload, dict) else None
+        # Fall back to the raw text if the model didn't fill `content` (or
+        # structured output failed to parse at all) — a plain-text reply the
+        # analyst can read beats erroring the whole chat turn.
+        message = {"role": "assistant", "content": content if content is not None else text}
+        finish_reason = "stop"
+
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+        "usage": usage,
+    }
+
+
+async def handle(body: dict[str, Any], settings: Any, store: Store) -> dict[str, Any]:
+    messages = body.get("messages") or []
+    tools = body.get("tools") or []
+    session_id = extract_session_id(messages)
+
+    started = time.monotonic()
+    envelope, tool_trace, thinking = await cli_exec.run_claude_once(
+        bin_path=settings.claude_cli_bin,
+        oauth_token=settings.claude_code_oauth_token,
+        timeout=settings.claude_cli_timeout,
+        system=build_system_prompt(messages, tools),
+        user_message=build_transcript(messages),
+        model=settings.orchestrator_model,
+        schema=build_schema(tools),
+        add_dir=None,  # the orchestrator's chat model needs no file access
+    )
+    latency_ms = int((time.monotonic() - started) * 1000)
+
+    # One `llm_usage` row per chat turn, `call_site="orchestrator_chat"` —
+    # kept distinct from the generator rows (call_site="parser"/"workbook_*"/
+    # etc.) recorded elsewhere for the *same* session_id, so the two can be
+    # queried and compared separately (e.g. "how much did the conversation
+    # itself cost vs. the artifacts it generated"). Never allowed to break
+    # the chat turn over a transient DB hiccup — logged and swallowed,
+    # mirroring generators/_shared.py's usage_recorder.
+    try:
+        await store.record_llm_usage(
+            run_id=new_id("run"), draft_id=None, session_id=session_id,
+            provider="claude_cli", model=settings.orchestrator_model,
+            call_site="orchestrator_chat", iteration=envelope.get("num_turns", 0),
+            usage=usage_from_envelope(envelope), latency_ms=latency_ms,
+        )
+    except Exception as exc:  # noqa: BLE001 - deliberate: never break the chat turn over this
+        log.warning("orchestrator chat: failed to record llm usage: %s", exc)
+
+    text = envelope.get("result") or ""
+    payload = envelope.get("structured_output")
+    if payload is None and text:
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = None
+
+    usage_raw = envelope.get("usage") or {}
+    prompt_tokens = usage_raw.get("input_tokens", 0)
+    completion_tokens = usage_raw.get("output_tokens", 0)
+    usage = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }
+
+    if thinking:
+        log.debug(
+            "openai_compat thinking captured | session=%s chars=%d",
+            envelope.get("session_id"), len(thinking),
+        )
+    log.info(
+        "openai_compat OK | session=%s turns=%s cost=$%.4f in=%d out=%d cache_read=%d "
+        "tool=%s native_tools=%s thinking=%dchars",
+        envelope.get("session_id"), envelope.get("num_turns", 0),
+        envelope.get("total_cost_usd", 0.0),
+        usage_raw.get("input_tokens", 0), usage_raw.get("output_tokens", 0),
+        usage_raw.get("cache_read_input_tokens", 0),
+        payload.get("tool") if isinstance(payload, dict) else None,
+        tool_trace, len(thinking),
+    )
+
+    return to_openai_response(payload=payload, text=text, model=settings.orchestrator_model, usage=usage)
+
+
+def to_stream_chunks(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Reframe one already-completed `handle()` response as an OpenAI
+    streaming chunk sequence.
+
+    The claude CLI backend answers in a single shot — there's no token-by-
+    token generation to relay — so this hands the whole answer back as one
+    content (or tool_calls) delta rather than pretending otherwise. That
+    still satisfies clients (e.g. LangChain's ChatOpenAI with `stream: true`)
+    that require SSE chunk framing rather than a plain JSON body."""
+    choice = response["choices"][0]
+    message = choice["message"]
+    base = {
+        "id": response["id"],
+        "object": "chat.completion.chunk",
+        "created": response["created"],
+        "model": response["model"],
+    }
+
+    chunks = [{**base, "choices": [
+        {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+    ]}]
+
+    if message.get("tool_calls"):
+        chunks.append({**base, "choices": [{
+            "index": 0,
+            "delta": {"tool_calls": [{**tc, "index": 0} for tc in message["tool_calls"]]},
+            "finish_reason": None,
+        }]})
+    elif message.get("content"):
+        chunks.append({**base, "choices": [{
+            "index": 0, "delta": {"content": message["content"]}, "finish_reason": None,
+        }]})
+
+    chunks.append({**base, "choices": [{
+        "index": 0, "delta": {}, "finish_reason": choice["finish_reason"],
+    }]})
+    return chunks

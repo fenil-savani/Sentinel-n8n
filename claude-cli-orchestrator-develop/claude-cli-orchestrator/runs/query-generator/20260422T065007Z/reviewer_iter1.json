@@ -1,0 +1,241 @@
+{
+  "payload": {
+    "source_platform": "splunk",
+    "destination_platform": "google_secops",
+    "migration_type": "query",
+    "destination_metadata": {
+      "log_type": "WINDOWS_SECURITY",
+      "project_id": "my-gcp-project",
+      "customer_id": "acme-corp"
+    },
+    "summary": "Counts failed Windows login attempts per source IP over a 1-hour sliding window and alerts when the count exceeds 10, grouped by source IP address.",
+    "intent": "Detect brute-force login attacks against Windows hosts by identifying source IPs generating an unusually high number of authentication failures.",
+    "use_case": "Brute Force Detection -- Windows Authentication",
+    "parsed_json": {
+      "base_search": {
+        "index": "wineventlog",
+        "criteria": [
+          {
+            "field": "EventCode",
+            "operator": "=",
+            "value": "4625"
+          },
+          {
+            "field": "sourcetype",
+            "operator": "=",
+            "value": "WinEventLog:Security"
+          }
+        ]
+      },
+      "pipeline": [
+        {
+          "command": "stats",
+          "arguments": {
+            "function": "count",
+            "by": [
+              "src_ip"
+            ]
+          }
+        },
+        {
+          "command": "where",
+          "arguments": {
+            "condition": "count > 10"
+          }
+        }
+      ],
+      "time_window": {
+        "type": "sliding",
+        "value": 1,
+        "unit": "hours"
+      }
+    },
+    "commands": [
+      {
+        "name": "search",
+        "description": "Base event filter by EventCode and sourcetype"
+      },
+      {
+        "name": "stats",
+        "description": "Count events grouped by src_ip"
+      },
+      {
+        "name": "where",
+        "description": "Filter groups where count exceeds threshold"
+      }
+    ],
+    "fields": [
+      "EventCode",
+      "sourcetype",
+      "src_ip"
+    ],
+    "functions": [
+      "count"
+    ],
+    "field_mappings": [
+      {
+        "source_field": "EventCode",
+        "destination_field": "metadata.product_event_type",
+        "matching_tier": "high",
+        "reasoning": "EventCode directly maps to product_event_type in UDM",
+        "source_extraction": null,
+        "destination_extraction": null
+      },
+      {
+        "source_field": "src_ip",
+        "destination_field": "principal.ip",
+        "matching_tier": "high",
+        "reasoning": "Source IP maps to principal.ip in UDM network events",
+        "source_extraction": null,
+        "destination_extraction": null
+      },
+      {
+        "source_field": "sourcetype",
+        "destination_field": "metadata.log_type",
+        "matching_tier": "high",
+        "reasoning": "sourcetype identifies the log source; maps to UDM log_type",
+        "source_extraction": null,
+        "destination_extraction": null
+      }
+    ],
+    "query": "index=wineventlog EventCode=4625 sourcetype=WinEventLog:Security | stats count by src_ip | where count > 10",
+    "source_metadata": {
+      "index": "wineventlog",
+      "sourcetype": "WinEventLog:Security"
+    },
+    "app_name": "windows_security_monitoring",
+    "panel_name": "Brute Force Dashboard",
+    "datasource": "wineventlog",
+    "usage_type": "detection",
+    "unmapped_fields": [],
+    "metadata": {
+      "created_by": "migration-tool",
+      "version": "1.0"
+    },
+    "workflow_id": "test-workflow-001",
+    "agentweave_sessions": [],
+    "analysis": "The source Splunk query detects brute-force attacks by counting failed Windows authentication events (EventCode 4625) per source IP over a 1-hour window and filtering for counts exceeding 10. Step 1: Understood the intent as identifying source IPs with unusually high authentication failure rates. Step 2: Parsed the structure as base_search (EventCode=4625, sourcetype filtering) + stats aggregation (count by src_ip) + threshold (count > 10). Step 3: Mapped commands to YARA-L constructs: search→events, stats→match+outcome, where→outcome/dashboard filtering. Step 4: Applied field mappings: EventCode→metadata.product_event_type='4625', src_ip→principal.ip, sourcetype→metadata.log_type='WINDOWS_SECURITY' (from destination_metadata). Step 5: Constructed the query using events section for filtering, match section for grouping by principal.ip (using tumbling 'by hour' per YARA-L dashboard conventions), and outcome section with count(metadata.id) aggregation. Step 6: Addressed edge case: source's sliding 1-hour window maps to tumbling 'by hour' (best approximation in dashboard queries); threshold (count > 10) is intended for dashboard widget configuration rather than query-level filtering, as YARA-L dashboard queries lack where-clause semantics on aggregates. Step 7: Verified all required sections, all field mappings are present, no Splunk syntax artifacts remain.",
+    "reasoning": "Google SecOps (Chronicle) uses YARA-L 2.0, a section-based declarative language unlike Splunk's pipe-chained SPL. The translation preserves the detection intent by filtering for failed logins (EventCode 4625) from WINDOWS_SECURITY log type, grouping by principal.ip, and calculating a count of events per IP. The threshold (count > 10) represents a semantic difference: SPL uses a where clause applied during query execution, while YARA-L dashboards typically handle thresholding at the widget level. By surfacing the count sorted in descending order, the translated query provides the same data for threat hunters to identify high-frequency source IPs.",
+    "assumptions": [
+      "The 1-hour sliding window is approximated as 'by hour' tumbling window, which is the standard aggregation pattern for YARA-L dashboard queries. Tumbling windows partition time into non-overlapping buckets, whereas sliding windows continuously update; for brute-force detection, both approaches are operationally acceptable and identify the same threat pattern.",
+      "The threshold condition (count > 10) is assumed to be enforced at the dashboard widget configuration level (e.g., via conditional formatting or filtering in the UI) rather than within the query itself, as YARA-L dashboard queries do not support where-clause syntax on aggregate columns.",
+      "The EventCode value '4625' (failed login) is assumed to remain as a string literal in the product_event_type field. If the destination platform normalizes this to a different representation, it would need to be adjusted.",
+      "principal.ip is used for grouping even if some events lack an IP value; the != \"\" filter minimizes noise from empty IP fields but may not eliminate all anomalies."
+    ],
+    "warnings": [
+      "Warning: Sliding window semantics lost. Source uses 1-hour sliding window; translated query uses 'by hour' tumbling window (non-overlapping buckets). This is a known limitation of YARA-L dashboard queries, which do not support sliding/hop windows.",
+      "Warning: Threshold filtering (count > 10) cannot be expressed in YARA-L dashboard query syntax. This condition should be enforced via dashboard widget settings, conditional formatting, or by post-query filtering in the UI. The query surfaces all counts sorted by frequency; filtering is deferred to presentation layer.",
+      "Warning: The source uses a 'sourcetype=WinEventLog:Security' filter, which maps to log_type. The destination_metadata provides log_type='WINDOWS_SECURITY', but this may not exactly correspond to the Splunk sourcetype value. Verify that WINDOWS_SECURITY is the correct log type for this data source in Chronicle.",
+      "Warning: YARA-L dashboard queries do not support custom time windows via syntax (e.g., no explicit '1 hour' window declaration). The 'by hour' keyword creates fixed hourly buckets. If sub-hourly granularity is required, this query design may not be suitable."
+    ],
+    "result": "metadata.log_type = \"WINDOWS_SECURITY\"\nmetadata.product_event_type = \"4625\"\nprincipal.ip != \"\"\n\nmatch:\n  principal.ip by hour\n\noutcome:\n  $failed_login_count = count(metadata.id)\n\norder:\n  $failed_login_count desc",
+    "ctx_iteration": 1
+  },
+  "result": {
+    "overall_status": "PASS",
+    "all_passed": true,
+    "iteration": 1,
+    "validation_results": [
+      {
+        "validator": "V1_IntentCoverage",
+        "is_valid": true,
+        "explanation": "The generated query captures the core detection intent: failed Windows login events (EventCode 4625 via metadata.product_event_type), filtered by log type (WINDOWS_SECURITY), grouped by source IP (principal.ip), aggregated by count over hourly windows, and sorted by frequency. The threshold condition (count > 10) is intentionally omitted per the generator's documented assumption that thresholding is enforced at the dashboard widget configuration level rather than in query syntax. This is an acceptable architectural choice for YARA-L dashboard queries, which do not support where-clause filtering on aggregates. All key semantic elements required for brute-force detection are present.",
+        "details": {
+          "covered_concepts": [
+            "Event type filter: EventCode 4625 (failed logins)",
+            "Log type constraint: WINDOWS_SECURITY",
+            "Aggregation: count by source IP",
+            "Time window: hourly buckets",
+            "Sorting: by count descending (enabling threat hunters to identify high-frequency IPs)"
+          ],
+          "deferred_to_presentation": [
+            "Threshold enforcement (count > 10) -- properly documented as dashboard widget responsibility"
+          ]
+        }
+      },
+      {
+        "validator": "V2_FieldMapping",
+        "is_valid": true,
+        "explanation": "All 3 field mappings from the source query are present in the generated query. EventCode maps to metadata.product_event_type (value '4625'), src_ip maps to principal.ip (appears in both filter and grouping), and sourcetype maps to metadata.log_type (value 'WINDOWS_SECURITY'). Each field mapping entry has its destination field correctly represented in the query.",
+        "details": {
+          "field_mapping_results": [
+            "EventCode -> metadata.product_event_type: FOUND in constraint 'metadata.product_event_type = \"4625\"'",
+            "src_ip -> principal.ip: FOUND in filter 'principal.ip != \"\"' and grouping 'principal.ip by hour'",
+            "sourcetype -> metadata.log_type: FOUND in constraint 'metadata.log_type = \"WINDOWS_SECURITY\"'"
+          ]
+        }
+      },
+      {
+        "validator": "V3_MissingFields",
+        "is_valid": true,
+        "explanation": "All destination fields from field_mappings are accounted for in the generated query. Each of the three mapped destination fields (metadata.product_event_type, principal.ip, metadata.log_type) is present in the query and used semantically. No destination fields are unaccounted for.",
+        "details": {
+          "accounted_fields": [
+            "metadata.product_event_type: Present in filter conditions",
+            "principal.ip: Present in both filter (principal.ip != \"\") and match grouping (principal.ip by hour)",
+            "metadata.log_type: Present in filter conditions"
+          ]
+        }
+      },
+      {
+        "validator": "V4_Structure",
+        "is_valid": true,
+        "explanation": "The generated query adheres to valid YARA-L 2.0 dashboard query structure. All required sections are present and properly ordered: (1) filter conditions first (metadata.log_type, metadata.product_event_type, principal.ip constraints), (2) match section with grouping dimension (principal.ip by hour), (3) outcome section with aggregation (count(metadata.id)), and (4) order section for result sorting. No Splunk SPL syntax artifacts remain. No illegal YARA-L constructs detected. The query is syntactically well-formed for execution as a Google SecOps dashboard query.",
+        "details": {
+          "structural_sections_present": [
+            "Filter conditions (3 constraints)",
+            "Match section with 'by hour' temporal grouping",
+            "Outcome section with count() aggregation",
+            "Order section for descending sort"
+          ],
+          "no_splunk_artifacts": true,
+          "no_illegal_constructs": true
+        }
+      },
+      {
+        "validator": "V5_Syntax",
+        "is_valid": true,
+        "explanation": "MCP syntax validation passed. The Google SecOps platform validator (validate_dashboard_query) confirms the query is syntactically valid with no errors. The platform identified 3 output columns: principal.ip, TIME_BUCKET (auto-generated from 'by hour' temporal bucketing), and failed_login_count (the aggregated count outcome variable). Query is ready for execution.",
+        "details": {
+          "mcp_response": {
+            "is_valid": true,
+            "message": "Query is syntactically valid. Found 3 columns.",
+            "columns": [
+              "principal.ip",
+              "TIME_BUCKET",
+              "failed_login_count"
+            ]
+          }
+        }
+      }
+    ],
+    "failed_validators": [],
+    "feedback_for_generator": null
+  },
+  "raw_text": "Excellent! The MCP tool confirms the query is syntactically valid.\n\n---\n\n## VALIDATION SUMMARY\n\nNow I'll compile the final output with all validator results:\n\n```json\n{\n  \"overall_status\": \"PASS\",\n  \"all_passed\": true,\n  \"iteration\": 1,\n  \"validation_results\": [\n    {\n      \"validator\": \"V1_IntentCoverage\",\n      \"is_valid\": true,\n      \"explanation\": \"The generated query captures the core detection intent: failed Windows login events (EventCode 4625 via metadata.product_event_type), filtered by log type (WINDOWS_SECURITY), grouped by source IP (principal.ip), aggregated by count over hourly windows, and sorted by frequency. The threshold condition (count > 10) is intentionally omitted per the generator's documented assumption that thresholding is enforced at the dashboard widget configuration level rather than in query syntax. This is an acceptable architectural choice for YARA-L dashboard queries, which do not support where-clause filtering on aggregates. All key semantic elements required for brute-force detection are present.\",\n      \"details\": {\n        \"covered_concepts\": [\n          \"Event type filter: EventCode 4625 (failed logins)\",\n          \"Log type constraint: WINDOWS_SECURITY\",\n          \"Aggregation: count by source IP\",\n          \"Time window: hourly buckets\",\n          \"Sorting: by count descending (enabling threat hunters to identify high-frequency IPs)\"\n        ],\n        \"deferred_to_presentation\": [\n          \"Threshold enforcement (count > 10) -- properly documented as dashboard widget responsibility\"\n        ]\n      }\n    },\n    {\n      \"validator\": \"V2_FieldMapping\",\n      \"is_valid\": true,\n      \"explanation\": \"All 3 field mappings from the source query are present in the generated query. EventCode maps to metadata.product_event_type (value '4625'), src_ip maps to principal.ip (appears in both filter and grouping), and sourcetype maps to metadata.log_type (value 'WINDOWS_SECURITY'). Each field mapping entry has its destination field correctly represented in the query.\",\n      \"details\": {\n        \"field_mapping_results\": [\n          \"EventCode -> metadata.product_event_type: FOUND in constraint 'metadata.product_event_type = \\\"4625\\\"'\",\n          \"src_ip -> principal.ip: FOUND in filter 'principal.ip != \\\"\\\"' and grouping 'principal.ip by hour'\",\n          \"sourcetype -> metadata.log_type: FOUND in constraint 'metadata.log_type = \\\"WINDOWS_SECURITY\\\"'\"\n        ]\n      }\n    },\n    {\n      \"validator\": \"V3_MissingFields\",\n      \"is_valid\": true,\n      \"explanation\": \"All destination fields from field_mappings are accounted for in the generated query. Each of the three mapped destination fields (metadata.product_event_type, principal.ip, metadata.log_type) is present in the query and used semantically. No destination fields are unaccounted for.\",\n      \"details\": {\n        \"accounted_fields\": [\n          \"metadata.product_event_type: Present in filter conditions\",\n          \"principal.ip: Present in both filter (principal.ip != \\\"\\\") and match grouping (principal.ip by hour)\",\n          \"metadata.log_type: Present in filter conditions\"\n        ]\n      }\n    },\n    {\n      \"validator\": \"V4_Structure\",\n      \"is_valid\": true,\n      \"explanation\": \"The generated query adheres to valid YARA-L 2.0 dashboard query structure. All required sections are present and properly ordered: (1) filter conditions first (metadata.log_type, metadata.product_event_type, principal.ip constraints), (2) match section with grouping dimension (principal.ip by hour), (3) outcome section with aggregation (count(metadata.id)), and (4) order section for result sorting. No Splunk SPL syntax artifacts remain. No illegal YARA-L constructs detected. The query is syntactically well-formed for execution as a Google SecOps dashboard query.\",\n      \"details\": {\n        \"structural_sections_present\": [\n          \"Filter conditions (3 constraints)\",\n          \"Match section with 'by hour' temporal grouping\",\n          \"Outcome section with count() aggregation\",\n          \"Order section for descending sort\"\n        ],\n        \"no_splunk_artifacts\": true,\n        \"no_illegal_constructs\": true\n      }\n    },\n    {\n      \"validator\": \"V5_Syntax\",\n      \"is_valid\": true,\n      \"explanation\": \"MCP syntax validation passed. The Google SecOps platform validator (validate_dashboard_query) confirms the query is syntactically valid with no errors. The platform identified 3 output columns: principal.ip, TIME_BUCKET (auto-generated from 'by hour' temporal bucketing), and failed_login_count (the aggregated count outcome variable). Query is ready for execution.\",\n      \"details\": {\n        \"mcp_response\": {\n          \"is_valid\": true,\n          \"message\": \"Query is syntactically valid. Found 3 columns.\",\n          \"columns\": [\n            \"principal.ip\",\n            \"TIME_BUCKET\",\n            \"failed_login_count\"\n          ]\n        }\n      }\n    }\n  ],\n  \"failed_validators\": [],\n  \"feedback_for_generator\": null\n}\n```",
+  "success": true,
+  "error": "",
+  "skills_loaded": [],
+  "tool_calls": [
+    {
+      "name": "ReadMcpResourceTool",
+      "input": {
+        "server": "context-engine",
+        "uri": "product_docs/google_secops/platform_config.md"
+      }
+    },
+    {
+      "name": "mcp__context-engine__context_engine_agent",
+      "input": {
+        "query": "What is the MCP tool name for query validation in google_secops platform? What is the query_structure_file path and illegal_constructs patterns?",
+        "source_product": "google_secops"
+      }
+    },
+    {
+      "name": "mcp__google-secops-mcp-server__validate_dashboard_query",
+      "input": {
+        "query": "metadata.log_type = \"WINDOWS_SECURITY\"\nmetadata.product_event_type = \"4625\"\nprincipal.ip != \"\"\n\nmatch:\n  principal.ip by hour\n\noutcome:\n  $failed_login_count = count(metadata.id)\n\norder:\n  $failed_login_count desc"
+      }
+    }
+  ]
+}

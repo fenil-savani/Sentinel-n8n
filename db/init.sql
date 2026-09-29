@@ -15,7 +15,8 @@ CREATE DATABASE sentinel;
 CREATE TABLE IF NOT EXISTS drafts (
     id            TEXT PRIMARY KEY,                 -- drf_<ulid>
     kind          TEXT NOT NULL
-                  CHECK (kind IN ('parser', 'workbook')),
+                  CHECK (kind IN ('parser', 'workbook', 'analytic_rule', 'playbook',
+                                  'ccf_connector', 'asim_parser', 'tdd', 'packaging')),
     name          TEXT NOT NULL,                    -- functionAlias, or workbook displayName
     -- needs_input is a pause, not a failure: the skill's "STOP and ask rather
     -- than guessing" rule fired and the analyst owes an answer. A workbook
@@ -58,7 +59,8 @@ CREATE TABLE IF NOT EXISTS deployments (
     draft_id        TEXT NOT NULL REFERENCES drafts (id) ON DELETE RESTRICT,
 
     resource_type   TEXT NOT NULL
-                    CHECK (resource_type IN ('savedSearch', 'workbook')),
+                    CHECK (resource_type IN ('savedSearch', 'workbook', 'alertRule',
+                                              'templateDeployment')),
     resource_id     TEXT NOT NULL,                  -- full ARM resource id
 
     action          TEXT NOT NULL CHECK (action IN ('create', 'update')),

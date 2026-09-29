@@ -8,3 +8,7 @@ PyYAML==6.0.2
 jsonschema==4.23.0
 python-ulid==3.0.0
 anthropic==0.69.0
+# TDD -> .docx conversion (app/generators/tdd_docx.py drives the bundled
+# generate-sentinel-tdd skill's scripts/md_to_docx.py, which needs both).
+python-docx==1.1.2
+requests==2.32.3

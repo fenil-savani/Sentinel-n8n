@@ -1,5 +1,5 @@
 ---
-name: Generate Microsoft Sentinel Workbook
+name: generate-sentinel-workbook
 description: Generate a Microsoft Sentinel workbook JSON from a parser and optional reference dashboard (LogScale YAML, Splunk XML, screenshot, or spec) — following Sentinel workbook best practices. Also supports migrating an existing third-party dashboard (Splunk, Falcon, Elastic, etc.) to Sentinel.
 ---
 
@@ -60,6 +60,26 @@ Once the source file is provided:
 
 ---
 
+### Multi-parser workbooks (several log types, one workbook)
+
+When more than one parser is in scope (e.g. "one workbook covering Account, Detection, and
+Lockdown data"), the harness passes you all of them. Two rules change:
+
+1. **Every panel in your `submit_manifest` plan must set its own `"parser"` field** to exactly
+   one of the parsers you were given — never assume a single default. A panel whose data comes
+   from `vectra_ai_detection_events` must say so explicitly, even if another panel in the same
+   plan uses `vectra_ai_account_entities`.
+2. **Use one tab per parser** (the "Workbook scope" question in Step 1 — this is exactly the
+   multi-tab case). The tab switcher IS the "which data type am I looking at" filter; do not also
+   try to build a Step 4 per-dimension multiselect that reads from more than one parser — the
+   schemas differ, and a shared filter field usually doesn't exist on all of them. Skip Step 4's
+   per-dimension filters entirely in multi-parser mode (GlobalTimeRestriction still applies to
+   every panel); a panel that needs its own dimension filter can still write it directly into its
+   own KQL body, scoped to its own parser's real fields.
+
+Everything else below (visualisation rules, naming, template-safety) applies per panel exactly
+as written, just against that panel's own declared parser instead of one shared one.
+
 ## Step 2 — Validate inputs
 
 Before generating, confirm:
@@ -104,7 +124,7 @@ Every workbook *must follows this outer skeleton*:
 
 Wrap every panel inside ONE outer group (`type: 12`). Use inner `type: 12` sub-groups to organise sections (Overview, Distribution, Trends, Detail Tables). Don't put bare panels at the top level — keep them grouped.
 
-Read `data/CorelightDataExplorer.yaml` this example dashboard to understand how we create sentinel dashboard.
+Read `reference/CorelightDataExplorer.yaml` this example dashboard to understand how we create sentinel dashboard.
 
 ## Step 4 — Parameters block
 
@@ -268,4 +288,4 @@ Output:
 
 ## Reference dashboard
 
-- multi-tab pattern with `Tab` parameter and `conditionalVisibility` per group - `data/CorelightDataExplorer.yaml`
+- multi-tab pattern with `Tab` parameter and `conditionalVisibility` per group - `reference/CorelightDataExplorer.yaml`

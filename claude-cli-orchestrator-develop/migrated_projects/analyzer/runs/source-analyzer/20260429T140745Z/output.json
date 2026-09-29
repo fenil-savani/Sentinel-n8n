@@ -1,0 +1,91 @@
+{
+  "id": "test-workflow-001",
+  "query": "index=wineventlog EventCode=4625 sourcetype=WinEventLog:Security | stats count by src_ip | where count > 10",
+  "parsed_json": {
+    "base_search": {
+      "index": "wineventlog",
+      "criteria": [
+        {
+          "field": "EventCode",
+          "operator": "=",
+          "value": "4625"
+        },
+        {
+          "field": "sourcetype",
+          "operator": "=",
+          "value": "WinEventLog:Security"
+        }
+      ]
+    },
+    "pipeline": [
+      {
+        "command": "stats",
+        "arguments": {
+          "function": "count",
+          "by": [
+            "src_ip"
+          ]
+        }
+      },
+      {
+        "command": "where",
+        "arguments": {
+          "condition": "count > 10"
+        }
+      }
+    ],
+    "time_window": {
+      "type": "sliding",
+      "value": 1,
+      "unit": "hours"
+    }
+  },
+  "fields": {
+    "reserved_fields": [
+      "index",
+      "sourcetype",
+      "_raw",
+      "_time"
+    ],
+    "custom_fields": [
+      "EventCode",
+      "src_ip",
+      "count"
+    ],
+    "meta_fields": {
+      "index": "wineventlog",
+      "sourcetype": "WinEventLog:Security"
+    }
+  },
+  "commands": [
+    {
+      "name": "search",
+      "description": "Base event filter using field criteria (EventCode=4625 and sourcetype=WinEventLog:Security) against the wineventlog index"
+    },
+    {
+      "name": "stats",
+      "description": "Aggregates events by counting occurrences grouped by the src_ip field"
+    },
+    {
+      "name": "where",
+      "description": "Filters the aggregated results to include only groups where the count exceeds the threshold of 10"
+    }
+  ],
+  "functions": [
+    {
+      "name": "count",
+      "description": "Aggregation function that counts the number of events in each group"
+    }
+  ],
+  "metadata": {
+    "created_by": "migration-tool",
+    "version": "1.0"
+  },
+  "usage_type": "detection",
+  "datasource": "wineventlog",
+  "summary": "This Splunk query searches the wineventlog index for Windows failed authentication events (EventCode 4625) with sourcetype WinEventLog:Security. It aggregates the events using a count function grouped by source IP address (src_ip) and filters the results to display only source IPs that have generated more than 10 failed authentication attempts within a 1-hour sliding window. The output provides a list of suspicious source IPs ranked by the number of failed login attempts they initiated.",
+  "intent": "Detect brute-force login attacks against Windows hosts by identifying source IP addresses that exceed a threshold of failed authentication attempts within a defined time window.",
+  "use_case": "Security monitoring for brute-force attack detection on Windows domain-joined systems. Used in a detection alert workflow to automatically trigger notifications when source IPs exhibit authentication patterns consistent with credential-stuffing or password-spray attacks.",
+  "status": "PASS",
+  "confidence_score": 1.0
+}

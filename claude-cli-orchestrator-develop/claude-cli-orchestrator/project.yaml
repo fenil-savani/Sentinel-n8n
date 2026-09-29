@@ -1,0 +1,126 @@
+﻿# =============================================================================
+# Query Generator -- Claude CLI Project Configuration
+# =============================================================================
+# Converts Splunk SPL queries to Google SecOps YARA-L 2.0.
+#
+# subagents:  defines agents and their tools (mirrors AGENT_DEFINITIONS)
+# workflow:   declarative execution DAG consumed by WorkflowEngine
+# =============================================================================
+
+name: query-generator
+display_name: "Query Generator"
+description: "Converts Splunk SPL queries / detection rules to Google SecOps YARA-L 2.0 dashboard queries and detection rules."
+
+subagents:
+  - name: generator
+    prompt_file: agents/generator.md
+    description: "Generates a YARA-L 2.0 destination query from a source SPL query using platform docs and field mappings."
+    model: sonnet
+    tools:
+      - Read
+      - Grep
+      - mcp__context-engine__context_engine_agent
+
+  - name: reviewer
+    prompt_file: agents/reviewer.md
+    description: "Validates the generated YARA-L query against 5 validators (V1 intent, V2 field mapping, V3 missing fields, V4 structure, V5 syntax)."
+    model: sonnet
+    tools:
+      - Read
+      - Grep
+      - mcp__google-secops-mcp-server__validate_dashboard_query
+      - mcp__google-secops-mcp-server__validate_rule
+
+# =============================================================================
+# Workflow -- pipeline-level retry loop with cross-agent feedback injection
+#
+# Input mode: AUTO-CHAIN (no input: blocks on steps).
+#
+# How it works:
+#   - cumulative_state is seeded with the full input.json payload at run start.
+#   - After each step succeeds, its output is merged into cumulative_state.
+#   - Each step receives the entire cumulative_state as its JSON payload, so
+#     every agent automatically has all fields from prior steps and the
+#     original input -- no explicit "$." wiring required.
+#   - Two context keys are injected automatically on every step invocation:
+#       ctx_iteration  (int)         -- current pipeline iteration number
+#       ctx_feedback   (str | null)  -- feedback text set by the feedback: rule
+#                                      below; mirrors feedback_for_generator
+#                                      already present in cumulative_state
+#
+# State evolution per iteration:
+#   SEED:       {source_platform, destination_platform, field_mappings, ...}
+#   + generator: {result, analysis, reasoning, assumptions, warnings}
+#   + reviewer:  {overall_status, validation_results, feedback_for_generator}
+#   -> iteration 2 generator sees ALL of the above automatically
+# =============================================================================
+workflow:
+  max_iterations: 3
+
+  steps:
+    # -------------------------------------------------------------------------
+    # Step 1: Generator
+    # Receives cumulative_state (all input fields) + ctx_iteration + ctx_feedback.
+    # On retry: also sees reviewer's overall_status, validation_results, and
+    # feedback_for_generator from the prior iteration -- no wiring needed.
+    # -------------------------------------------------------------------------
+    - id: generator
+      agent: generator
+      # No input: block -> auto-chain mode
+
+    # -------------------------------------------------------------------------
+    # Step 2: Reviewer
+    # Receives cumulative_state (input fields + generator output) + ctx_iteration.
+    # Sees generator's result, analysis, reasoning, assumptions, warnings directly.
+    # -------------------------------------------------------------------------
+    - id: reviewer
+      agent: reviewer
+      depends_on: [generator]
+      # No input: block -> auto-chain mode
+
+  # Pipeline exits when reviewer reports overall_status == "PASS".
+  exit_condition:
+    step: reviewer
+    field: overall_status
+    equals: "PASS"
+
+  # When reviewer fails, extract its feedback and inject it into the next
+  # generator call as ctx_feedback (in addition to feedback_for_generator
+  # already present in cumulative_state via auto-chain).
+  feedback:
+    - when:
+        step: reviewer
+        field: overall_status
+        not_equals: "PASS"
+      from:
+        step: reviewer
+        field: feedback_for_generator
+      to:
+        step: generator
+        as: ctx_feedback
+      # If feedback_for_generator is null/empty, build it from failed validators:
+      fallback: generic_validation_feedback
+
+  # Fields copied from input -> output unchanged (not sent to any agent).
+  passthrough_fields:
+    - source_platform
+    - destination_platform
+    - migration_type
+    - destination_metadata
+    - summary
+    - intent
+    - use_case
+    - field_mappings
+    - commands
+    - fields
+    - functions
+    - parsed_json
+    - source_metadata
+    - app_name
+    - panel_name
+    - datasource
+    - usage_type
+    - unmapped_fields
+    - metadata
+    - workflow_id
+    - agentweave_sessions

@@ -25,9 +25,11 @@ Model-specific behaviour worth knowing before editing this file:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
-from .base import AgentRuntime, LLMUnavailable, RunResult, Tool
+from .base import AgentRuntime, LLMUnavailable, RunResult, Tool, UsageCallback
+from .pricing import Usage
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +37,26 @@ log = logging.getLogger(__name__)
 #: worth having on by default.
 _FALLBACK_MODELS = ("claude-opus-5", "claude-fable-5", "claude-mythos-5")
 _FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+
+def _usage_from_response(resp_usage: Any) -> Usage:
+    """Normalize an Anthropic SDK response's `.usage` into our shared `Usage`
+    shape. `cache_creation` (the 5m/1h TTL breakdown) is only present on
+    newer API versions; when absent, conservatively bucket the whole write
+    as 5-minute TTL rather than guess at a split."""
+    cache_creation = getattr(resp_usage, "cache_creation", None)
+    cache_5m = getattr(cache_creation, "ephemeral_5m_input_tokens", None) if cache_creation else None
+    cache_1h = getattr(cache_creation, "ephemeral_1h_input_tokens", None) if cache_creation else None
+    if cache_5m is None and cache_1h is None:
+        cache_5m = getattr(resp_usage, "cache_creation_input_tokens", 0) or 0
+        cache_1h = 0
+    return Usage(
+        input_tokens=getattr(resp_usage, "input_tokens", 0) or 0,
+        output_tokens=getattr(resp_usage, "output_tokens", 0) or 0,
+        cache_creation_5m_tokens=cache_5m or 0,
+        cache_creation_1h_tokens=cache_1h or 0,
+        cache_read_tokens=getattr(resp_usage, "cache_read_input_tokens", 0) or 0,
+    )
 
 
 class AnthropicRuntime(AgentRuntime):
@@ -116,6 +138,7 @@ class AnthropicRuntime(AgentRuntime):
         tools: list[Tool],
         model: str,
         max_iterations: int = 24,
+        on_call: UsageCallback | None = None,
     ) -> RunResult:
         by_name = self._index(tools)
         wire_tools = self._to_wire(tools)
@@ -127,11 +150,22 @@ class AnthropicRuntime(AgentRuntime):
         ]
         messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
         trace: list[str] = []
+        total_usage = Usage()
 
         for iteration in range(1, max_iterations + 1):
+            started = time.monotonic()
             resp = await self._create(
                 model=model, system=system_blocks, messages=messages, wire_tools=wire_tools
             )
+            latency_ms = int((time.monotonic() - started) * 1000)
+
+            # Usage is present on every response regardless of stop_reason —
+            # read it before any refusal/content handling that might return
+            # or raise early, so a refused or truncated turn still bills.
+            call_usage = _usage_from_response(resp.usage)
+            total_usage += call_usage
+            if on_call is not None:
+                await on_call(call_usage, model, iteration, latency_ms)
 
             # Always check stop_reason before touching content: on a refusal the
             # content array is empty and indexing it raises.
@@ -160,6 +194,7 @@ class AnthropicRuntime(AgentRuntime):
                     text=text,
                     iterations=iteration,
                     tool_trace=trace,
+                    usage=total_usage,
                 )
 
             # Echo the assistant turn back verbatim — thinking blocks and their
@@ -175,6 +210,7 @@ class AnthropicRuntime(AgentRuntime):
                     text=text,
                     iterations=iteration,
                     tool_trace=trace,
+                    usage=total_usage,
                 )
 
             # All results for one assistant turn go back in a single user

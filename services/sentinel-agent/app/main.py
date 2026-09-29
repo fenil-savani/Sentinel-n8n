@@ -18,16 +18,21 @@ from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 import yaml
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from .azure.logs import LogsClient
 from .azure.token import TokenProvider
 from .config import get_settings
-from .generators.parser import ParserRequest, generate_parser
+from .generators.analytic_rule import AnalyticRuleRequest, generate_analytic_rule, revise_analytic_rule
+from .generators.ccf_connector import CcfConnectorRequest, generate_ccf_connector, revise_ccf_connector
+from .generators.parser import ParserRequest, generate_parser, revise_parser
+from .generators.tdd import TddRequest, check_tdd_structure, generate_tdd, revise_tdd
 from .generators.workbook import WorkbookRequest, generate_workbook
-from .lint.rules import lint_parser, lint_workbook
-from .llm import build_runtime
+from .lint.rules import lint_analytic_rule, lint_parser, lint_workbook
+from .llm import build_runtime, openai_compat
 from .llm.base import LLMUnavailable
 from .store import Store
 
@@ -67,8 +72,9 @@ async def lifespan(app: FastAPI):
     app.state.panel_runtime = build_runtime(settings, max_tokens=4000)
 
     log.info(
-        "ready: model=%s panel_model=%s azure=%s",
-        settings.llm_model, settings.llm_model_panel,
+        "ready: provider=%s parser_model=%s manifest_model=%s panel_model=%s azure=%s",
+        settings.llm_provider, settings.llm_model_parser,
+        settings.llm_model_workbook_manifest, settings.llm_model_panel,
         settings.azure_configured(),
     )
     try:
@@ -85,6 +91,20 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Sentinel Agent", version="0.1.0", lifespan=lifespan)
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    # FastAPI's default `detail` is a list of {loc, msg, ...} dicts. n8n's HTTP
+    # Request node only surfaces a body's `detail` as the error message when
+    # it's a plain string — for the list shape it falls back to a generic
+    # per-status-code message, which hides *why* the request was rejected
+    # from both the caller and the LLM tool caller that has to retry.
+    parts = []
+    for err in exc.errors():
+        loc = ".".join(str(p) for p in err["loc"] if p != "body")
+        parts.append(f"{loc}: {err['msg']}" if loc else err["msg"])
+    return JSONResponse(status_code=422, content={"detail": "; ".join(parts)})
+
+
 # ── request models ──────────────────────────────────────────────────────────
 
 class ParserBody(BaseModel):
@@ -96,11 +116,65 @@ class ParserBody(BaseModel):
     reference_parser: str | None = None
     dedup_key: str | None = None
     notes: str | None = None
+    solution: str | None = Field(None, description="Solution/vendor name, for the output folder")
+    session_id: str | None = None
+
+
+class AnalyticRuleBody(BaseModel):
+    name: str = Field(..., description="Rule name, e.g. Corelight Suspicious DNS Tunneling")
+    scenario: str = Field(..., description="Plain-language detection scenario")
+    table: str = Field(..., description="Table or parser the rule queries")
+    connector_id: str | None = None
+    severity: str = "Medium"
+    query_frequency: str | None = None
+    query_period: str | None = None
+    trigger_operator: str | None = None
+    trigger_threshold: int | None = None
+    create_incident: bool = True
+    tactics: list[str] = Field(default_factory=list)
+    techniques: list[str] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
+    watchlist: str | None = None
+    notes: str | None = None
+    solution: str | None = Field(None, description="Solution/vendor name, for the output folder")
+    session_id: str | None = None
+
+
+class TddBody(BaseModel):
+    vendor: str = Field(..., description="e.g. Corelight")
+    product: str = Field(..., description="e.g. Open NDR Platform")
+    purpose: str = Field(..., description="What data flows into Sentinel and why")
+    components: list[str] = Field(default_factory=list,
+                                   description="Subset of Data Connector, Parser, Analytic Rule, Workbook, Playbook")
+    ingestion_mechanism: str | None = None
+    api_base_url: str | None = None
+    api_auth_type: str | None = None
+    api_endpoints: str | None = None
+    notes: str | None = None
+    solution: str | None = Field(None, description="Solution/vendor name, for the output folder")
+    session_id: str | None = None
+
+
+class CcfConnectorBody(BaseModel):
+    company: str = Field(..., description="e.g. Palo Alto")
+    product: str = Field(..., description="e.g. Prisma Cloud CWPP")
+    log_type: str = Field(..., description="e.g. Logs, Events, Alerts, AuditLogs")
+    publisher: str = Field(..., description="Shown in the Sentinel UI")
+    auth_type: str = Field(..., description="APIKey / Basic / OAuth2 / JwtToken")
+    pagination_type: str = Field(..., description="Offset / NextPageToken / PersistentToken / LinkHeader / None")
+    api_endpoints: str = Field(..., description="Full API endpoint URL(s)")
+    response_structure: str = Field(..., description="Sample API response, or a field-name/type list")
+    table: str | None = Field(None, description="Existing standard table name, if applicable")
+    reference_connector: str | None = Field(
+        None, description="Reference example folder to mirror, e.g. 'GitHub' or 'Sophos Endpoint Protection'"
+    )
+    notes: str | None = None
+    solution: str | None = Field(None, description="Solution/vendor name, for the output folder")
     session_id: str | None = None
 
 
 class WorkbookBody(BaseModel):
-    parser: str
+    parser: str = Field(..., description="Primary/default parser. The only one needed when the workbook covers a single log type.")
     product: str
     topic: str
     mode: Literal["generate", "replicate"] = "generate"
@@ -110,6 +184,19 @@ class WorkbookBody(BaseModel):
     parser_fields: list[str] = Field(default_factory=list)
     tabs: list[str] = Field(default_factory=list)
     notes: str | None = None
+    solution: str | None = Field(None, description="Solution/vendor name, for the output folder")
+    parsers: list[str] = Field(
+        default_factory=list,
+        description="Additional parsers, for a workbook spanning more than one log type/table "
+                    "(e.g. one workbook covering 3 different parsers). Leave empty for the "
+                    "normal single-parser case. When set, every planned panel must declare "
+                    "which of 'parser' + these it queries — enforced during generation.",
+    )
+    session_id: str | None = None
+
+
+class RevisionBody(BaseModel):
+    feedback: str = Field(..., description="The analyst's requested change, in plain language")
     session_id: str | None = None
 
 
@@ -122,17 +209,79 @@ class LintBody(BaseModel):
     draft_id: str
 
 
+class ChatCompletionBody(BaseModel):
+    """OpenAI chat-completions request shape, as sent by n8n's OpenAI Chat
+    Model node (LangChain's ChatOpenAI) — see app/llm/openai_compat.py."""
+    model_config = ConfigDict(extra="ignore")
+
+    model: str
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: Any = None
+    stream: bool = False
+
+
 # ── health ──────────────────────────────────────────────────────────────────
 
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
     return {
         "ok": True,
-        "model": settings.llm_model,
+        "llm_provider": settings.llm_provider,
+        "parser_model": settings.llm_model_parser,
+        "workbook_manifest_model": settings.llm_model_workbook_manifest,
         "panel_model": settings.llm_model_panel,
         "azure_configured": settings.azure_configured(),
         "panel_query_validation": settings.validate_panel_queries,
     }
+
+
+# ── orchestrator chat proxy ──────────────────────────────────────────────────
+# Lets n8n's own orchestrator chat model (an "OpenAI Chat Model" node pointed
+# at this endpoint) run on the claude CLI too — see app/llm/openai_compat.py.
+# Independent of settings.llm_provider: this always uses the CLI.
+
+@app.get("/v1/models")
+async def get_models() -> dict[str, Any]:
+    """Minimal OpenAI-compatible /v1/models. Not used for generation — it
+    exists only because n8n's OpenAI credential "test connection" button
+    GETs this exact path (see OpenAiApi.credentials.js's `test` block) and
+    would otherwise report a 404 as a connection failure."""
+    return {
+        "object": "list",
+        "data": [{
+            "id": settings.orchestrator_model,
+            "object": "model",
+            "owned_by": "anthropic",
+        }],
+    }
+
+
+@app.post("/v1/chat/completions", response_model=None)
+async def post_chat_completions(body: ChatCompletionBody) -> dict[str, Any] | StreamingResponse:
+    try:
+        response = await openai_compat.handle(body.model_dump(), settings, app.state.store)
+    except LLMUnavailable as exc:
+        # OpenAI-shaped error body so LangChain surfaces a sensible message
+        # instead of a raw parse failure.
+        raise HTTPException(
+            status_code=503,
+            detail={"error": {"message": str(exc), "type": "api_error"}},
+        ) from exc
+
+    if not body.stream:
+        return response
+
+    # The claude CLI answers in one shot; there's nothing to relay
+    # incrementally. So the completed response above is reframed as an SSE
+    # chunk sequence purely so `stream: true` clients (LangChain's
+    # ChatOpenAI) get the framing they expect instead of a 400.
+    async def _sse():
+        for chunk in openai_compat.to_stream_chunks(response):
+            yield f"data: {json.dumps(chunk)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_sse(), media_type="text/event-stream")
 
 
 # ── generation ──────────────────────────────────────────────────────────────
@@ -153,6 +302,33 @@ async def post_generate_parser(body: ParserBody) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.post("/generate/analytic-rule")
+async def post_generate_analytic_rule(body: AnalyticRuleBody) -> dict[str, Any]:
+    try:
+        return await generate_analytic_rule(
+            AnalyticRuleRequest(**body.model_dump()),
+            runtime=app.state.runtime,
+            settings=settings,
+            store=app.state.store,
+            logs=app.state.logs,
+        )
+    except LLMUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/generate/tdd")
+async def post_generate_tdd(body: TddBody) -> dict[str, Any]:
+    try:
+        return await generate_tdd(
+            TddRequest(**body.model_dump()),
+            runtime=app.state.runtime,
+            settings=settings,
+            store=app.state.store,
+        )
+    except LLMUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.post("/generate/workbook")
 async def post_generate_workbook(body: WorkbookBody) -> dict[str, Any]:
     try:
@@ -162,6 +338,62 @@ async def post_generate_workbook(body: WorkbookBody) -> dict[str, Any]:
             panel_runtime=app.state.panel_runtime,
             settings=settings,
             store=app.state.store,
+            logs=app.state.logs,
+        )
+    except LLMUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/generate/ccf-connector")
+async def post_generate_ccf_connector(body: CcfConnectorBody) -> dict[str, Any]:
+    try:
+        return await generate_ccf_connector(
+            CcfConnectorRequest(**body.model_dump()),
+            runtime=app.state.runtime,
+            settings=settings,
+            store=app.state.store,
+            logs=app.state.logs,
+        )
+    except LLMUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+_REVISERS = {
+    "parser": revise_parser,
+    "analytic_rule": revise_analytic_rule,
+    "ccf_connector": revise_ccf_connector,
+}
+
+
+@app.post("/revise/{draft_id}")
+async def post_revise(draft_id: str, body: RevisionBody) -> dict[str, Any]:
+    draft = await app.state.store.get_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"no draft {draft_id}")
+
+    kind = draft["kind"]
+    if kind == "tdd":
+        try:
+            return await revise_tdd(
+                draft_id, body.feedback,
+                runtime=app.state.runtime, settings=settings, store=app.state.store,
+            )
+        except LLMUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    reviser = _REVISERS.get(kind)
+    if reviser is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"revision is not supported for '{kind}' drafts yet — "
+                "regenerate with adjusted inputs instead."
+            ),
+        )
+    try:
+        return await reviser(
+            draft_id, body.feedback,
+            runtime=app.state.runtime, settings=settings, store=app.state.store,
             logs=app.state.logs,
         )
     except LLMUnavailable as exc:
@@ -190,14 +422,23 @@ async def post_lint(body: LintBody) -> dict[str, Any]:
     if not artifact:
         raise HTTPException(status_code=409, detail="draft has no artifact to lint")
 
-    if draft["kind"] == "parser":
+    if draft["kind"] == "tdd":
+        components = (draft.get("summary") or {}).get("components") or []
+        findings = check_tdd_structure(artifact, components)
+        return {"pass": not any(f["severity"] == "error" for f in findings), "findings": findings}
+
+    if draft["kind"] in ("parser", "analytic_rule"):
         try:
             doc = yaml.safe_load(artifact)
         except yaml.YAMLError as exc:
             return {"pass": False, "findings": [
                 {"rule": "parser.yaml", "severity": "error", "message": str(exc)[:400]}
             ]}
-        ok, findings = lint_parser(doc if isinstance(doc, dict) else {}, artifact)
+        doc = doc if isinstance(doc, dict) else {}
+        if draft["kind"] == "analytic_rule":
+            ok, findings = lint_analytic_rule(doc, artifact)
+        else:
+            ok, findings = lint_parser(doc, artifact)
     else:
         try:
             doc = json.loads(artifact)
@@ -205,7 +446,8 @@ async def post_lint(body: LintBody) -> dict[str, Any]:
             return {"pass": False, "findings": [
                 {"rule": "workbook.json", "severity": "error", "message": str(exc)[:400]}
             ]}
-        ok, findings = lint_workbook(doc, parser=(draft.get("summary") or {}).get("parser"))
+        wb_summary = draft.get("summary") or {}
+        ok, findings = lint_workbook(doc, parser=wb_summary.get("parsers") or wb_summary.get("parser"))
 
     return {"pass": ok, "findings": [f.as_dict() for f in findings]}
 
@@ -238,6 +480,16 @@ async def list_drafts(session_id: str | None = None, limit: int = 20) -> dict[st
     return {"drafts": await app.state.store.list_drafts(session_id, limit)}
 
 
+# ── LLM usage/cost ────────────────────────────────────────────────────────
+# Read-only over the llm_usage table (db/migrations/003_add_llm_usage.sql).
+# Not exposed to the orchestrator LLM as a tool — it's for operators checking
+# spend, not something the analyst should be able to ask the agent to run.
+
+@app.get("/usage/session/{session_id}")
+async def get_session_usage(session_id: str) -> dict[str, Any]:
+    return await app.state.store.usage_totals_for_session(session_id)
+
+
 # ── deployment records (written by the n8n deploy workflow) ─────────────────
 # One call, after the PUT has already happened: the deploy workflow is a
 # single pass (build request -> PUT -> record), so there is no separate
@@ -245,7 +497,7 @@ async def list_drafts(session_id: str | None = None, limit: int = 20) -> dict[st
 
 class DeploymentBody(BaseModel):
     draft_id: str
-    resource_type: Literal["savedSearch", "workbook"]
+    resource_type: Literal["savedSearch", "workbook", "alertRule", "templateDeployment"]
     resource_id: str
     action: Literal["create", "update"]
     request_body: dict[str, Any] | None = None

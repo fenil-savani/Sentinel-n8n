@@ -9,6 +9,23 @@ WORKDIR /srv
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# claude CLI, only used when LLM_PROVIDER=claude_cli (a Claude Code
+# subscription instead of ANTHROPIC_API_KEY — see app/llm/claude_cli.py).
+# Adds ~250-300MB. If you only ever use the default "anthropic" provider,
+# this layer is simply unused at runtime. Alternative for local/dev use:
+# skip this layer and bind-mount a host-installed `claude` binary into the
+# container instead, pointing CLAUDE_CLI_BIN at the mounted path.
+#
+# @anthropic-ai/claude-code requires Node >=22; Debian trixie's `apt nodejs`
+# package only provides Node 20 (confirmed via npm's EBADENGINE warning on a
+# plain `apt install nodejs npm`), so Node is pulled from NodeSource instead.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ca-certificates curl gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install --no-install-recommends -y nodejs \
+    && npm install -g @anthropic-ai/claude-code \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY app ./app
 
 # run_python executes model-generated code. It runs as this unprivileged user,

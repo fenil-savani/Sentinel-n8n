@@ -33,6 +33,11 @@ _MISSING_TABLE = re.compile(
 )
 
 
+#: getschema/small lookup queries are the only thing that reads `rows` today;
+#: this just keeps a pathological query from building a huge list in memory.
+_MAX_CAPTURED_ROWS = 500
+
+
 @dataclass(slots=True)
 class QueryResult:
     ok: bool
@@ -41,6 +46,13 @@ class QueryResult:
     #: syntax | missing_table | auth | transport | None
     error_kind: str | None = None
     columns: list[str] | None = None
+    #: First table's rows as column-name -> value dicts, capped at
+    #: _MAX_CAPTURED_ROWS. `run_kql`'s own tool response ignores this
+    #: (validation only ever reports row count, never row content, so a
+    #: query-validation call can't leak live customer data into the model's
+    #: context) — it exists for callers that explicitly need structured
+    #: results back, like schema lookups.
+    rows: list[dict] | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -97,11 +109,13 @@ class LogsClient:
         if resp.status_code == 200:
             body = resp.json()
             tables = body.get("tables") or []
-            rows = sum(len(t.get("rows") or []) for t in tables)
+            row_count = sum(len(t.get("rows") or []) for t in tables)
             columns = (
                 [c.get("name") for c in (tables[0].get("columns") or [])] if tables else []
             )
-            return QueryResult(ok=True, row_count=rows, columns=columns)
+            raw_rows = (tables[0].get("rows") or []) if tables else []
+            rows = [dict(zip(columns, r)) for r in raw_rows[:_MAX_CAPTURED_ROWS]]
+            return QueryResult(ok=True, row_count=row_count, columns=columns, rows=rows)
 
         message = self._extract_error(resp)
         kind = "missing_table" if _MISSING_TABLE.search(message) else "syntax"
